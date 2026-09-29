@@ -11,6 +11,7 @@
 | [`fixtures/designer-exercise.md`](../fixtures/designer-exercise.md) | Human checklist (Screens 1–3 + consent) |
 | [`fixtures/screens.json`](../fixtures/screens.json) | Machine map: `screen_id`, `required_copy`, consent gates, forbidden brand strings |
 | [`fixtures/codes.json`](../fixtures/codes.json) | Error code → `screen_id` |
+| [`P1_P4_COPY.md`](P1_P4_COPY.md) | HARDENING stub copy for [#5](https://github.com/DrCigarette69/stream-spike/issues/5) / [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
 
 Wireframes (design outlines, not pixels): `/workspace/stream-design/wireframes-core-flows-v0.md`
 
@@ -39,9 +40,9 @@ Grace path order is **1 then 2**. Screen 3 is a fixture/P0 toggle, not mid-grace
 |------|---------|---------|
 | `c0_aup` | C0 AUP gate | match precheck |
 | `c3_attest_denylist` | C3 denylist refuse copy | [#3](https://github.com/DrCigarette69/stream-spike/issues/3) |
-| `p1_isp_ack` | P1 ISP ack (no tunnel without) | [#5](https://github.com/DrCigarette69/stream-spike/issues/5) |
+| `p1_isp_ack` | P1 ISP ack (no tunnel without) — HARDENING copy in [`P1_P4_COPY.md`](P1_P4_COPY.md) | [#5](https://github.com/DrCigarette69/stream-spike/issues/5) |
 | `p2_consent` | P2 caps / residual risk / thin-market | Peer enroll |
-| `p4_kill` | P4 kill → `Sharing paused` | [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
+| `p4_kill` | P4 kill → `Sharing paused` — HARDENING copy in [`P1_P4_COPY.md`](P1_P4_COPY.md) | [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
 | `p6_cashout` | P6 mock Connect min **$25** | cashout gate |
 
 ## Designer DoD checklist
@@ -50,7 +51,7 @@ Mark in [`fixtures/designer-exercise.md`](../fixtures/designer-exercise.md) when
 
 - [ ] Screen 1 then 2 on grace path
 - [ ] Screen 3 on `strict_unavailable` fixture
-- [ ] P1 / P4 / denylist (C3) / P6 &lt;$25
+- [ ] P1 / P4 / denylist (C3) / P6 <$25
 - [ ] Brand/waive asserts pass
 
 ## Related

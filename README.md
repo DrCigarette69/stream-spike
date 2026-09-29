@@ -14,7 +14,7 @@ python3 scripts/run_local_asserts.py all   # both → prints SPIKE_DOD_GREEN
 
 Also: `python3 scripts/platform_smoke.py` · `python3 scripts/peer_smoke.py`
 
-Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RUNBOOK.md`](docs/PLATFORM_RUNBOOK.md) · [`docs/PEER_RUNBOOK.md`](docs/PEER_RUNBOOK.md) · [`docs/DESIGNER_RUNBOOK.md`](docs/DESIGNER_RUNBOOK.md)
+Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RUNBOOK.md`](docs/PLATFORM_RUNBOOK.md) · [`docs/PEER_RUNBOOK.md`](docs/PEER_RUNBOOK.md) · [`docs/DESIGNER_RUNBOOK.md`](docs/DESIGNER_RUNBOOK.md) · [`docs/P1_P4_COPY.md`](docs/P1_P4_COPY.md)
 
 ## Layout
 
@@ -27,7 +27,7 @@ Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RU
 
 ## Designer fixtures (screen IDs)
 
-Harness asserts UX by emitting codes that map to these IDs. Full runbook: [`docs/DESIGNER_RUNBOOK.md`](docs/DESIGNER_RUNBOOK.md).
+Harness asserts UX by emitting codes that map to these IDs. Full runbook: [`docs/DESIGNER_RUNBOOK.md`](docs/DESIGNER_RUNBOOK.md). P1/P4 HARDENING stub copy: [`docs/P1_P4_COPY.md`](docs/P1_P4_COPY.md).
 
 | File | Purpose |
 |------|---------|
@@ -51,9 +51,9 @@ CLI may print `UX <screen_id> code=<code>` for script greps.
 |------|--------|---------------|---------------|
 | `c0_aup` | C0 | `aup_accepted` before match | — |
 | `c3_attest_denylist` | C3 | denylist refuse copy includes `blocked` | [#3](https://github.com/DrCigarette69/stream-spike/issues/3) |
-| `p1_isp_ack` | P1 | `isp_ack_version` set or no tunnel | [#5](https://github.com/DrCigarette69/stream-spike/issues/5) |
+| `p1_isp_ack` | P1 | `isp_ack_version` set or no tunnel; greps in [`docs/P1_P4_COPY.md`](docs/P1_P4_COPY.md) | [#5](https://github.com/DrCigarette69/stream-spike/issues/5) |
 | `p2_consent` | P2 | caps / kill / residual risk / thin-market strings | — |
-| `p4_kill` | P4 | mid-stream kill → `Sharing paused` | [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
+| `p4_kill` | P4 | mid-stream kill → `Sharing paused` + resume detail; see [`docs/P1_P4_COPY.md`](docs/P1_P4_COPY.md) | [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
 | `p6_cashout` | P6 | mock withdraw blocked if accrued < **$25** | — |
 
 **Brand rule:** user-facing output must use `[Brand]` only. Asserts fail on substring `Stream` or liability-waive phrases — see `forbidden_user_facing_substrings` in [`fixtures/screens.json`](fixtures/screens.json).
