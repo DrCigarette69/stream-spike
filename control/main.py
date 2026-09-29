@@ -94,6 +94,32 @@ def _init_db() -> None:
               host_pattern TEXT, port INTEGER, reason TEXT,
               PRIMARY KEY(host_pattern, port)
             );
+            CREATE TABLE IF NOT EXISTS denylist_meta(
+              id INTEGER PRIMARY KEY CHECK (id=1),
+              version INTEGER NOT NULL DEFAULT 1,
+              updated_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS abuse_cases(
+              id TEXT PRIMARY KEY,
+              account_id TEXT,
+              source TEXT,
+              status TEXT,
+              actions TEXT,
+              stream_ids TEXT,
+              created_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS attribution(
+              stream_id TEXT PRIMARY KEY,
+              account_id TEXT,
+              peer_id TEXT,
+              dest_host TEXT,
+              dest_port INTEGER,
+              bytes_up INTEGER DEFAULT 0,
+              bytes_down INTEGER DEFAULT 0,
+              geo_tier TEXT,
+              frozen_stop INTEGER DEFAULT 0,
+              ts REAL
+            );
             """
         )
         # seed demo account + peer
@@ -107,6 +133,11 @@ def _init_db() -> None:
         )
         c.commit()
         _load_denylist(c)
+        c.execute(
+            "INSERT OR IGNORE INTO denylist_meta(id, version, updated_at) VALUES(1, ?)",
+            (time.time(),),
+        )
+        c.commit()
         c.close()
 
 
@@ -130,6 +161,12 @@ def _load_denylist(c: sqlite3.Connection) -> None:
                 "INSERT OR REPLACE INTO denylist(host_pattern,port,reason) VALUES(?,?,?)",
                 (e["host_pattern"], int(port), e.get("reason", "")),
             )
+    ver = int(seed.get("version", 1))
+    c.execute(
+        "INSERT INTO denylist_meta(id, version, updated_at) VALUES(1, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET version=excluded.version, updated_at=excluded.updated_at",
+        (ver, time.time()),
+    )
     c.commit()
 
 
@@ -177,15 +214,28 @@ def verify_ticket(ticket_json: str) -> tuple[bool, str]:
         obj = json.loads(ticket_json)
         payload = obj["payload"]
         sig = obj["sig"]
+        for req in ("session_id", "stream_id", "peer_endpoint_id", "gateway_endpoint_id", "alpn", "exp"):
+            if req not in payload:
+                return False, f"missing_{req}"
+        if payload.get("alpn") != "stream/tunnel/1":
+            return False, "bad_alpn"
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         expect = hmac.new(TICKET_SECRET, body, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expect):
             return False, "bad_sig"
-        if payload.get("exp", 0) < time.time():
+        if float(payload.get("exp", 0)) < time.time():
             return False, "expired"
         return True, "ok"
     except Exception as e:
         return False, str(e)
+
+
+def _denylist_version() -> int:
+    with _lock:
+        c = _conn()
+        row = c.execute("SELECT version FROM denylist_meta WHERE id=1").fetchone()
+        c.close()
+    return int(row["version"]) if row else 1
 
 
 def _host_denied(host: str, port: int) -> str | None:
@@ -297,6 +347,38 @@ class Handler(BaseHTTPRequestHandler):
             )
         if path == "/v1/admin/verify_ticket_helper":
             return self._json(400, {"error": "POST ticket_json"})
+        if path == "/v1/admin/denylist":
+            with _lock:
+                c = _conn()
+                rows = c.execute("SELECT host_pattern, port, reason FROM denylist").fetchall()
+                ver = c.execute("SELECT version, updated_at FROM denylist_meta WHERE id=1").fetchone()
+                c.close()
+            return self._json(
+                200,
+                {
+                    "version": int(ver["version"]) if ver else 1,
+                    "updated_at": ver["updated_at"] if ver else None,
+                    "entries": [
+                        {"host_pattern": r["host_pattern"], "port": r["port"], "reason": r["reason"]}
+                        for r in rows
+                    ],
+                },
+            )
+        if path.startswith("/v1/attribution/"):
+            stream_id = path.split("/v1/attribution/", 1)[1]
+            with _lock:
+                c = _conn()
+                row = c.execute("SELECT * FROM attribution WHERE stream_id=?", (stream_id,)).fetchone()
+                c.close()
+            if not row:
+                return self._json(404, {"error": "not_found"})
+            return self._json(200, dict(row))
+        if path == "/v1/admin/abuse_cases":
+            with _lock:
+                c = _conn()
+                rows = c.execute("SELECT * FROM abuse_cases ORDER BY created_at DESC").fetchall()
+                c.close()
+            return self._json(200, {"cases": [dict(r) for r in rows]})
         return self._json(404, {"error": "not_found"})
 
     def do_POST(self):
@@ -310,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                 _fixtures["country_paused"] = False
                 _fixtures["oversubscribed"] = False
                 c = _conn()
-                for t in ("quotes", "sessions", "ledger"):
+                for t in ("quotes", "sessions", "ledger", "abuse_cases", "attribution"):
                     c.execute(f"DELETE FROM {t}")
                 c.execute(
                     "UPDATE accounts SET balance_usd=5.0, frozen=0, aup_accepted=1, accrued_payout_usd=0 WHERE id='acct_demo'"
@@ -421,37 +503,98 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/v1/admin/accounts/") and path.endswith("/freeze"):
             aid = path.split("/")[4]
+            case_id = "abuse_" + uuid.uuid4().hex[:10]
             with _lock:
                 c = _conn()
                 c.execute("UPDATE accounts SET frozen=1 WHERE id=?", (aid,))
                 rows = c.execute(
-                    "SELECT label, stream_id FROM sessions WHERE account_id=? AND status='active'",
+                    "SELECT label, stream_id, peer_id FROM sessions WHERE account_id=? AND status='active'",
                     (aid,),
                 ).fetchall()
+                stream_ids = []
                 for r in rows:
+                    stream_ids.append(r["stream_id"])
                     c.execute(
                         "UPDATE sessions SET status='stopped', balance_state='stopped' WHERE stream_id=?",
                         (r["stream_id"],),
                     )
-                    _emit("account.frozen_stop", account_id=aid, stream_id=r["stream_id"])
+                    # preserve attribution metadata (HARDENING #4)
+                    c.execute(
+                        """INSERT INTO attribution(stream_id, account_id, peer_id, dest_host, dest_port, geo_tier, frozen_stop, ts)
+                           VALUES(?,?,?,?,?,?,1,?)
+                           ON CONFLICT(stream_id) DO UPDATE SET frozen_stop=1, ts=excluded.ts""",
+                        (r["stream_id"], aid, r["peer_id"], "", 0, "city", time.time()),
+                    )
+                    _emit(
+                        "account.frozen_stop",
+                        account_id=aid,
+                        stream_id=r["stream_id"],
+                        attribution_preserved=True,
+                        code="account_frozen",
+                    )
+                c.execute(
+                    "INSERT INTO abuse_cases(id, account_id, source, status, actions, stream_ids, created_at) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        case_id,
+                        aid,
+                        body.get("source", "admin_freeze"),
+                        "open",
+                        json.dumps(["freeze", "stop_inflight"]),
+                        json.dumps(stream_ids),
+                        time.time(),
+                    ),
+                )
                 c.commit()
                 c.close()
-            return self._json(200, {"frozen": aid, "stopped": [r["stream_id"] for r in rows]})
+            return self._json(
+                200,
+                {
+                    "frozen": aid,
+                    "stopped": stream_ids,
+                    "abuse_case_id": case_id,
+                    "attribution_preserved": True,
+                },
+            )
+
+        if path.startswith("/v1/admin/accounts/") and path.endswith("/unfreeze"):
+            aid = path.split("/")[4]
+            with _lock:
+                c = _conn()
+                c.execute("UPDATE accounts SET frozen=0 WHERE id=?", (aid,))
+                c.commit()
+                c.close()
+            _emit("account.unfrozen", account_id=aid)
+            return self._json(200, {"unfrozen": aid})
 
         if path == "/v1/admin/denylist":
             with _lock:
                 c = _conn()
-                if body.get("entries"):
+                if body.get("entries") is not None:
                     c.execute("DELETE FROM denylist")
                     for e in body["entries"]:
-                        for port in e.get("ports", [443]):
+                        ports = e.get("ports") or [e.get("port", 443)]
+                        for port in ports:
                             c.execute(
                                 "INSERT INTO denylist(host_pattern,port,reason) VALUES(?,?,?)",
                                 (e["host_pattern"], int(port), e.get("reason", "")),
                             )
+                    # version bump (HARDENING #3)
+                    if "version" in body:
+                        ver = int(body["version"])
+                    else:
+                        cur = c.execute("SELECT version FROM denylist_meta WHERE id=1").fetchone()
+                        ver = (int(cur["version"]) if cur else 1) + 1
+                    c.execute(
+                        "INSERT INTO denylist_meta(id, version, updated_at) VALUES(1, ?, ?) "
+                        "ON CONFLICT(id) DO UPDATE SET version=excluded.version, updated_at=excluded.updated_at",
+                        (ver, time.time()),
+                    )
                     c.commit()
+                    c.close()
+                    _emit("denylist.updated", version=ver)
+                    return self._json(200, {"ok": True, "version": ver})
                 c.close()
-            return self._json(200, {"ok": True})
+            return self._json(400, {"error": "entries_required"})
 
         if path == "/v1/dest/check":
             host = body.get("host", "")
@@ -466,14 +609,15 @@ class Handler(BaseHTTPRequestHandler):
                         "reason": reason,
                         "message": f"Destination blocked ({reason})",
                         "user_copy": "blocked",
+                        "denylist_version": _denylist_version(),
                     },
                 )
-            return self._json(200, {"allowed": True})
+            return self._json(200, {"allowed": True, "denylist_version": _denylist_version()})
 
         if path == "/v1/usage/flush":
             return self._usage_flush(body)
 
-        if path == "/v1/tickets/verify":
+        if path in ("/v1/tickets/verify", "/v1/admin/verify_ticket"):
             ok, why = verify_ticket(body.get("ticket_json", ""))
             return self._json(200 if ok else 403, {"ok": ok, "reason": why})
 
@@ -727,6 +871,31 @@ class Handler(BaseHTTPRequestHandler):
             if row["status"] != "active":
                 c.close()
                 return self._json(200, {"ignored": True, "status": row["status"]})
+            acct = c.execute("SELECT frozen FROM accounts WHERE id=?", (row["account_id"],)).fetchone()
+            if acct and acct["frozen"]:
+                c.execute(
+                    "UPDATE sessions SET status='stopped', balance_state='stopped' WHERE stream_id=?",
+                    (stream_id,),
+                )
+                c.commit()
+                c.close()
+                ev = _emit("account.frozen_stop", stream_id=stream_id, code="account_frozen")
+                return self._json(200, {"balance_state": "stopped", "stop": True, "frozen": True, "event": ev})
+            # optional mid-stream dest recheck (HARDENING #3)
+            if body.get("dest_host"):
+                reason = _host_denied(body["dest_host"], int(body.get("dest_port", 443)))
+                if reason:
+                    c.execute(
+                        "UPDATE sessions SET status='stopped', balance_state='stopped' WHERE stream_id=?",
+                        (stream_id,),
+                    )
+                    c.commit()
+                    c.close()
+                    ev = _emit("dest.denied_midstream", stream_id=stream_id, reason=reason, code="dest_denied")
+                    return self._json(
+                        200,
+                        {"balance_state": "stopped", "stop": True, "dest_denied": True, "event": ev, "user_copy": "blocked"},
+                    )
             state = row["balance_state"]
             grace_started = row["grace_started_at"]
             if state == "ok":
