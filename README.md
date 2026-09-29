@@ -1,7 +1,7 @@
 # Stream spike harness (local)
 
 **Status:** client-cli + local assert runner wired · Platform/Peer stubs · no public egress · no live Stripe  
-**Plan:** see product-docs/stream-spike-plan-v0.md (sibling docs)  
+**Plan:** `/workspace/product-docs/stream-spike-plan-v0.md`  
 **Default transport:** fake Relay · ALPN `stream/tunnel/1` + `AUTH_TICKET`
 
 ## DoD (no Docker)
