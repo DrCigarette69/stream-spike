@@ -1,0 +1,53 @@
+{
+  "brand_placeholder": "[Brand]",
+  "forbidden_user_facing_substrings": [
+    "Stream",
+    "waive all liability",
+    "ISP will always allow"
+  ],
+  "screens": [
+    {
+      "id": "screen_1_grace",
+      "number": 1,
+      "code": "balance_grace",
+      "event": "balance.grace_enter",
+      "required_copy": ["Balance hit zero", "Finishing this transfer", "Grace left"],
+      "script": "spike_grace_stop.sh",
+      "order": 1
+    },
+    {
+      "id": "screen_2_exhausted",
+      "number": 2,
+      "code": "balance_exhausted",
+      "event": "balance.grace_exhausted",
+      "required_copy": ["Session stopped", "Prepaid balance empty", "Add funds"],
+      "script": "spike_grace_stop.sh",
+      "order": 2
+    },
+    {
+      "id": "screen_3_strict_unavailable",
+      "number": 3,
+      "code": "strict_unavailable",
+      "event": null,
+      "required_copy": [
+        "Nearby exits aren’t available here right now",
+        "Switch to City rematch",
+        "Try another city"
+      ],
+      "script": "spike_p0_gates.sh",
+      "order": null
+    }
+  ],
+  "consent": [
+    {"id": "c0_aup", "screen": "C0", "gate": "aup_accepted"},
+    {"id": "c3_attest_denylist", "screen": "C3", "required_copy": ["blocked"]},
+    {"id": "p1_isp_ack", "screen": "P1", "gate": "isp_ack_version", "required_copy": ["does not guarantee your ISP"]},
+    {"id": "p2_consent", "screen": "P2", "required_copy": ["do not read page contents", "Matching may pause", "compromised device"]},
+    {"id": "p4_kill", "screen": "P4", "required_copy": ["Sharing paused"]},
+    {"id": "p6_cashout", "screen": "P6", "required_copy": ["Minimum cashout: $25"], "min_usd": 25}
+  ],
+  "capacity_copy": {
+    "capacity_country_paused": "Country exits paused",
+    "capacity_oversubscribed": "at capacity"
+  }
+}
