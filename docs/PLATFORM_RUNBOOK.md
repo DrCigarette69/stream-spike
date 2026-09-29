@@ -41,7 +41,7 @@ python3 scripts/platform_smoke.py
 # expect: PLATFORM_SMOKE_GREEN
 ```
 
-Covers: match → session → AUTH_TICKET tunnel → force grace → exhaust → ledger `peer_payout` + non-negative balance · denylist refuse · `strict_unavailable` fixture · freeze · mock cashout <$25 · bad ticket reject.
+Covers: match → session → AUTH_TICKET tunnel → force grace → exhaust → ledger `peer_payout` + non-negative balance · denylist refuse · `strict_unavailable` fixture · freeze · mock cashout &lt;$25 · bad ticket reject.
 
 ## Manual control / gateway bring-up
 
@@ -75,7 +75,7 @@ Peer must dial fake Relay with `HELLO` + non-empty `isp_ack_version` — see [`F
 | `POST /v1/admin/accounts/{id}/freeze` | Freeze + stop in-flight |
 | `POST /v1/admin/denylist` | Replace denylist seed |
 | `POST /v1/admin/fixtures` | Toggle `strict_unavailable` / capacity fixtures |
-| `POST /v1/mock/cashout` | 403 if accrued <$25 |
+| `POST /v1/mock/cashout` | 403 if accrued &lt; $25 |
 | `POST /gw/start` (gateway) | Denylist + AUTH_TICKET open + meter loop |
 | `POST /gw/inject_bad_ticket` | Auth fail demo |
 
@@ -101,3 +101,16 @@ Peer must dial fake Relay with `HELLO` + non-empty `isp_ack_version` — see [`F
 ## Non-goals
 
 Production tunnels, public egress, live Stripe/KYC, community Iroh relays.
+
+
+## HARDENING (#3 #4 #8) — stubs
+
+Still stubs only; Iroh parked.
+
+| Issue | Control | Gateway |
+|-------|---------|---------|
+| #3 denylist | `GET/POST /v1/admin/denylist` versioned; mid-stream recheck on `usage/flush` when `dest_host` present | meter loop attaches dest every 3 ticks; start returns `denylist_version` |
+| #4 freeze | freeze → `abuse_cases` + `attribution` preserve + `account.frozen_stop`; `POST .../unfreeze` | meter stops on `frozen` from flush |
+| #8 AUTH_TICKET | mint payload includes `alpn=stream/tunnel/1`; `POST /v1/tickets/verify` rejects missing/bad alpn | `/gw/start` verifies ticket with Control before Peer AUTH |
+
+`python3 scripts/platform_smoke.py` prints `HARDENING_SMOKE_GREEN #3 #4 #8` then `PLATFORM_SMOKE_GREEN`.
