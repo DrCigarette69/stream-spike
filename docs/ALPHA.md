@@ -4,7 +4,7 @@
 
 ## What "working alpha" means
 
-A **runnable local product demo** Jeff (or any teammate) can start in one command and see the Client\u2194Peer vertical slice plus P0 fail-closed gates — not production tunnels.
+A **runnable local product demo** Jeff (or any teammate) can start in one command and see the Client↔Peer vertical slice plus P0 fail-closed gates — not production tunnels.
 
 ### Alpha-0 (ship now — DoD)
 
@@ -20,7 +20,7 @@ A **runnable local product demo** Jeff (or any teammate) can start in one comman
 
 | # | Deliverable | Owner | Notes |
 |---|-------------|-------|-------|
-| A1.1 | Optional Iroh loopback lane (still no public egress) | Platform + Peer | Unpark only after A0 closed |
+| A1.1 | Optional Iroh loopback lane (still no public egress) | Platform + Peer | `SPIKE_TRANSPORT=iroh_loopback` · `scripts/iroh_loopback_smoke.py` → **A1.1_IROH_LOOPBACK_GREEN** · [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md) |
 | A1.2 | Minimal Peer tray/CLI: enroll → ISP ack → kill → resume | Peer + Designer · Architect asserts | `peer_alpha1_cli.py` → **PEER_ALPHA1_CLI_GREEN**; `./scripts/demo_alpha.sh` or `run_local_asserts.py a12` / `alpha1` |
 | A1.3 | Client quote → match → grace → add-funds mock | Platform + Designer | Mock Stripe only |
 | A1.4 | Alpha acceptance checklist video/script | Designer | Fixture walkthrough |
@@ -38,4 +38,5 @@ python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN
 python3 scripts/run_local_asserts.py a12   # → PEER_ALPHA1_CLI_GREEN
 ./scripts/demo_alpha.sh                    # DoD + A1.2 walkthrough
 ./scripts/compose_health.sh                # → A0.4_COMPOSE_GREEN (needs Docker)
+python3 scripts/iroh_loopback_smoke.py     # → A1.1_IROH_LOOPBACK_GREEN (opt-in)
 ```
