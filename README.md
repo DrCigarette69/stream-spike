@@ -14,6 +14,8 @@ python3 scripts/run_local_asserts.py all   # both → prints SPIKE_DOD_GREEN
 
 Also: `python3 scripts/platform_smoke.py` · `python3 scripts/peer_smoke.py`
 
+Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RUNBOOK.md`](docs/PLATFORM_RUNBOOK.md) · Peer smoke notes in `scripts/peer_smoke.py`
+
 ## Layout
 
 | Path | Owner |
