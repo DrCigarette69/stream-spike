@@ -550,7 +550,7 @@ class Handler(BaseHTTPRequestHandler):
                         "code": "strict_unavailable",
                         "capacity": cap,
                         "user_copy": [
-                            "Nearby exits aren't available here right now",
+                            "Nearby exits aren’t available here right now",
                             "Switch to City rematch",
                             "Try another city",
                         ],
