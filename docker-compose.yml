@@ -1,60 +1,79 @@
-# Stream spike — local harness. No public ports required beyond localhost.
-# Network is internal; only client-cli talks to control/gateway on the compose network.
+# Stream spike — local harness. Alpha-0 A0.4: host health on 8080/1080/9200.
+# network_mode: host — box Docker bridge/internal nets drop inter-container TCP
+# and block published Ports={}. Host mode keeps localhost-only binds (no public expose).
 
 services:
   control:
     build: ./control
+    network_mode: host
     environment:
       SPIKE_DB: /data/spike.sqlite
       SPIKE_TICKET_SECRET: dev-only-change-me
-      SPIKE_LISTEN: 0.0.0.0:8080
+      SPIKE_LISTEN: 127.0.0.1:8080
       SPIKE_DENYLIST: /fixtures/denylist.seed.json
     volumes:
       - control-data:/data
       - ./fixtures:/fixtures:ro
-    networks: [spike]
-    # ports: ["8080:8080"]  # optional host access for debugging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   gateway:
     build: ./gateway
+    network_mode: host
     environment:
-      CONTROL_URL: http://control:8080
+      CONTROL_URL: http://127.0.0.1:8080
       SPIKE_TRANSPORT: fake_relay   # fake_relay | iroh (iroh later)
-      SPIKE_LISTEN_PROXY: 0.0.0.0:1080
-      SPIKE_FAKE_RELAY: 0.0.0.0:9100
-    depends_on: [control]
-    networks: [spike]
+      SPIKE_LISTEN_PROXY: 127.0.0.1:1080
+      SPIKE_FAKE_RELAY: 127.0.0.1:9100
+    depends_on:
+      control:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:1080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   peer:
     build: ./peer
+    network_mode: host
     environment:
-      CONTROL_URL: http://control:8080
+      CONTROL_URL: http://127.0.0.1:8080
       SPIKE_TRANSPORT: fake_relay
-      SPIKE_FAKE_RELAY_DIAL: gateway:9100
+      SPIKE_FAKE_RELAY_DIAL: 127.0.0.1:9100
       SPIKE_ISP_ACK_VERSION: "v1"  # empty = fail closed; gate-peer-ack clears via /peer/ack
       SPIKE_HOST_TIER: casual
-      SPIKE_PEER_ADMIN: 0.0.0.0:9200
+      SPIKE_PEER_ADMIN: 127.0.0.1:9200
       SPIKE_PEER_ID: peer_demo
       SPIKE_ENDPOINT_ID: iroh_ep_demo_001
-    depends_on: [control, gateway]
-    networks: [spike]
+    depends_on:
+      control:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 8s
 
   client-cli:
     build: ./client-cli
+    network_mode: host
     environment:
-      CONTROL_URL: http://control:8080
-      GATEWAY_PROXY: gateway:1080
+      CONTROL_URL: http://127.0.0.1:8080
+      GATEWAY_PROXY: 127.0.0.1:1080
       FIXTURES: /fixtures
     volumes:
       - ./fixtures:/fixtures:ro
     depends_on: [control, gateway, peer]
-    networks: [spike]
     profiles: [cli]   # run via: docker compose run --rm client-cli ...
-
-networks:
-  spike:
-    driver: bridge
-    internal: true   # no egress to public internet from compose network
 
 volumes:
   control-data:

@@ -13,7 +13,7 @@ A **runnable local product demo** Jeff (or any teammate) can start in one comman
 | A0.1 | Control loads + stack healthy on `main` | Grok Bot / Platform | `python3 scripts/run_local_asserts.py all` → **SPIKE_DOD_GREEN** |
 | A0.2 | Close GitHub #3–#9 (spike complete) | Architect | Issues closed after green re-verify |
 | A0.3 | One-command demo | Architect + Platform | `./scripts/demo_alpha.sh` prints Screens 1–3 + gate passes |
-| A0.4 | `docker-compose up` starts Control/Gateway/Peer | Platform | `/health` on 8080/1080/9200 |
+| A0.4 | `docker compose up` starts Control/Gateway/Peer | Platform | **A0.4_COMPOSE_GREEN** — `/health` on 8080/1080/9200 (`scripts/compose_health.sh`; host networking — bridge/internal blocked host publish + inter-container TCP on this box) |
 | A0.5 | ALPHA runbook + README pointer | Spec Keeper / Architect | This file + README Status line |
 
 ### Alpha-1 (next slice — after A0 green)
@@ -36,4 +36,5 @@ A **runnable local product demo** Jeff (or any teammate) can start in one comman
 cd stream-spike
 python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN
 ./scripts/demo_alpha.sh                    # same stack + human-readable walkthrough
+./scripts/compose_health.sh                # → A0.4_COMPOSE_GREEN (needs Docker)
 ```
