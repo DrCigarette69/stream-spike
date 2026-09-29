@@ -41,7 +41,7 @@ python3 scripts/platform_smoke.py
 # expect: PLATFORM_SMOKE_GREEN
 ```
 
-Covers: match → session → AUTH_TICKET tunnel → force grace → exhaust → ledger `peer_payout` + non-negative balance · denylist refuse · `strict_unavailable` fixture · freeze · mock cashout &lt;$25 · bad ticket reject.
+Covers: match → session → AUTH_TICKET tunnel → force grace → exhaust → ledger `peer_payout` + non-negative balance · denylist refuse · `strict_unavailable` fixture · freeze · mock cashout &$lt;$25 · bad ticket reject.
 
 ## Manual control / gateway bring-up
 
@@ -76,6 +76,7 @@ Peer must dial fake Relay with `HELLO` + non-empty `isp_ack_version` — see [`F
 | `POST /v1/admin/denylist` | Replace denylist seed |
 | `POST /v1/admin/fixtures` | Toggle `strict_unavailable` / capacity fixtures |
 | `POST /v1/mock/cashout` | 403 if accrued &lt; $25 |
+| `POST /v1/mock/topup` | Mock Stripe customer credit (A1.3); 400 if amount<=0 |
 | `POST /gw/start` (gateway) | Denylist + AUTH_TICKET open + meter loop |
 | `POST /gw/inject_bad_ticket` | Auth fail demo |
 
@@ -123,3 +124,16 @@ python3 scripts/iroh_loopback_smoke.py   # → A1.1_IROH_LOOPBACK_GREEN
 
 See [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md). Default transport remains `fake_relay`.
 
+## A1.3 Mock customer top-up (Stripe stub)
+
+**HOLD live Stripe / KYC.** Env: none (uses existing `SPIKE_*` stack).
+
+| Item | Value |
+|------|-------|
+| Endpoint | `POST /v1/mock/topup` body `{account_id?, amount_usd?}` (default amount 10) |
+| Codes | `mock_topup` · screen `c2_add_funds_mock` · rail `mock_stripe` |
+| Copy | `Add funds` · `This is a test top-up` · `Funds added` ([`A1_3_COPY.md`](A1_3_COPY.md)) |
+| Proof | `python3 scripts/a13_mock_topup_smoke.py` → **A1.3_MOCK_TOPUP_GREEN** |
+| Assert mode | `python3 scripts/run_local_asserts.py a13` / `mock-topup` |
+
+Credits `accounts.balance_usd`; does **not** auto-resume a stopped session (reconnect = new match+session). Rejects `amount_usd <= 0` with 400. Peer cashout mock remains `POST /v1/mock/cashout`.
