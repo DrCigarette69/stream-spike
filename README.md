@@ -1,6 +1,6 @@
 # Stream spike harness (local)
 
-**Status:** SPIKE_DOD_GREEN (local asserts) · stubs only · no public egress · no live Stripe  
+**Status:** Alpha-0 · SPIKE_DOD_GREEN (local asserts) · stubs only · no public egress · no live Stripe · [docs/ALPHA.md](docs/ALPHA.md)  
 **Plan:** `/workspace/product-docs/stream-spike-plan-v0.md` · backlog: [`docs/PHASE0_BACKLOG.md`](docs/PHASE0_BACKLOG.md)  
 **Default transport:** fake Relay · ALPN `stream/tunnel/1` + `AUTH_TICKET`
 
