@@ -14,7 +14,7 @@ python3 scripts/run_local_asserts.py all   # both → prints SPIKE_DOD_GREEN
 
 Also: `python3 scripts/platform_smoke.py` · `python3 scripts/peer_smoke.py`
 
-Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RUNBOOK.md`](docs/PLATFORM_RUNBOOK.md) · [`docs/PEER_RUNBOOK.md`](docs/PEER_RUNBOOK.md)
+Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RUNBOOK.md`](docs/PLATFORM_RUNBOOK.md) · [`docs/PEER_RUNBOOK.md`](docs/PEER_RUNBOOK.md) · [`docs/DESIGNER_RUNBOOK.md`](docs/DESIGNER_RUNBOOK.md)
 
 ## Layout
 
@@ -27,7 +27,7 @@ Runbooks: [`docs/LOCAL_ASSERTS.md`](docs/LOCAL_ASSERTS.md) · [`docs/PLATFORM_RU
 
 ## Designer fixtures (screen IDs)
 
-Harness asserts UX by emitting codes that map to these IDs. Source of truth:
+Harness asserts UX by emitting codes that map to these IDs. Full runbook: [`docs/DESIGNER_RUNBOOK.md`](docs/DESIGNER_RUNBOOK.md).
 
 | File | Purpose |
 |------|---------|

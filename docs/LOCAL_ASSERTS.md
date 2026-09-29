@@ -36,7 +36,7 @@ Success line: **`SPIKE_DOD_GREEN`**
 | AUP | match blocked until accepted | — |
 | Cashout $25 | mock Connect below min | — |
 
-Designer fixture IDs: [`../fixtures/screens.json`](../fixtures/screens.json) · checklist [`../fixtures/designer-exercise.md`](../fixtures/designer-exercise.md)
+Designer fixture IDs: [`../fixtures/screens.json`](../fixtures/screens.json) · checklist [`../fixtures/designer-exercise.md`](../fixtures/designer-exercise.md) · runbook [`DESIGNER_RUNBOOK.md`](DESIGNER_RUNBOOK.md)
 
 ## Component smokes
 
@@ -70,6 +70,7 @@ Use these when debugging one side before full DoD.
 
 - [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) — Platform endpoints + tips  
 - [`PEER_RUNBOOK.md`](PEER_RUNBOOK.md) — Peer admin, ack/egress/kill, smoke  
+- [`DESIGNER_RUNBOOK.md`](DESIGNER_RUNBOOK.md) — fixture screen IDs + UX copy asserts  
 - [`FAKE_RELAY_PROTOCOL.md`](FAKE_RELAY_PROTOCOL.md) — HELLO / AUTH_TICKET / BYTES / CLOSE  
 - [`PHASE0_BACKLOG.md`](PHASE0_BACKLOG.md) — GitHub issue map
 
