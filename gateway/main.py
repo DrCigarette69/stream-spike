@@ -219,11 +219,15 @@ def close_stream_on_peer(peer_id: str, stream_id: str):
 
 
 def meter_loop(stream_id: str, peer_id: str, chunk=64_000, interval=0.15):
+    """HARDENING: mid-stream dest recheck + freeze stop via Control usage flush."""
+    ticks = 0
     while True:
         with _streams_lock:
             st = _streams.get(stream_id)
             if not st or st.get("stop"):
                 break
+            dest_host = st.get("dest_host", "echo.local")
+            dest_port = int(st.get("dest_port", 443))
         with _peers_lock:
             meta = _peers.get(peer_id)
         if meta:
@@ -236,15 +240,22 @@ def meter_loop(stream_id: str, peer_id: str, chunk=64_000, interval=0.15):
                         if stream_id in _streams:
                             _streams[stream_id]["stop"] = True
                     break
-        code, resp = _http_json("POST", "/v1/usage/flush", {"stream_id": stream_id, "bytes": chunk})
+        flush_body = {"stream_id": stream_id, "bytes": chunk}
+        # every few ticks, re-send dest so Control can recheck versioned denylist (#3)
+        ticks += 1
+        if ticks % 3 == 1:
+            flush_body["dest_host"] = dest_host
+            flush_body["dest_port"] = dest_port
+        code, resp = _http_json("POST", "/v1/usage/flush", flush_body)
         if resp.get("event"):
             print(f"EVENT {json.dumps(resp['event'])}", flush=True)
-        if resp.get("stop") or resp.get("balance_state") == "stopped":
+        if resp.get("stop") or resp.get("balance_state") == "stopped" or resp.get("frozen") or resp.get("dest_denied"):
             with _streams_lock:
                 if stream_id in _streams:
                     _streams[stream_id]["stop"] = True
             close_stream_on_peer(peer_id, stream_id)
-            print(f"stream stopped {stream_id}", flush=True)
+            why = "frozen" if resp.get("frozen") else ("dest_denied" if resp.get("dest_denied") else "stopped")
+            print(f"stream stopped {stream_id} reason={why}", flush=True)
             break
         time.sleep(interval)
     close_stream_on_peer(peer_id, stream_id)
@@ -272,7 +283,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             with _peers_lock:
                 peers = list(_peers.keys())
-            return self._json(200, {"ok": True, "service": "gateway", "peers": peers, "alpn": ALPN})
+            return self._json(200, {"ok": True, "service": "gateway", "peers": peers, "alpn": ALPN, "hardening": ["denylist_midstream", "freeze_stop", "ticket_alpn"]})
         if self.path == "/gw/peers":
             with _peers_lock:
                 return self._json(
@@ -300,19 +311,52 @@ class AdminHandler(BaseHTTPRequestHandler):
             if code != 200 or not chk.get("allowed", False):
                 return self._json(
                     403,
-                    {"error": "dest_denied", "code": "dest_denied", "detail": chk, "user_copy": "blocked"},
+                    {
+                        "error": "dest_denied",
+                        "code": "dest_denied",
+                        "detail": chk,
+                        "user_copy": "blocked",
+                        "denylist_version": chk.get("denylist_version"),
+                    },
                 )
             if body.get("alpn", ALPN) != ALPN:
                 return self._json(403, {"error": "bad_alpn", "code": "bad_alpn"})
+            ticket_json = body.get("ticket_json", "")
+            # HARDENING #8: Control verifies HMAC + required alpn=stream/tunnel/1
+            vcode, vresp = _http_json("POST", "/v1/tickets/verify", {"ticket_json": ticket_json})
+            if vcode != 200 or not vresp.get("ok"):
+                return self._json(
+                    403,
+                    {
+                        "error": vresp.get("reason", "ticket_invalid"),
+                        "code": "auth_ticket_failed",
+                        "detail": vresp,
+                    },
+                )
             peer_id = body["peer_id"]
             stream_id = body["stream_id"]
-            ok, why = open_stream_to_peer(peer_id, body["ticket_json"], stream_id, dest_host, dest_port)
+            ok, why = open_stream_to_peer(peer_id, ticket_json, stream_id, dest_host, dest_port)
             if not ok:
                 return self._json(403, {"error": why, "code": "auth_ticket_failed"})
             with _streams_lock:
-                _streams[stream_id] = {"stop": False, "peer_id": peer_id, "label": body.get("label")}
+                _streams[stream_id] = {
+                    "stop": False,
+                    "peer_id": peer_id,
+                    "label": body.get("label"),
+                    "dest_host": dest_host,
+                    "dest_port": dest_port,
+                    "denylist_version": chk.get("denylist_version"),
+                }
             threading.Thread(target=meter_loop, args=(stream_id, peer_id), daemon=True).start()
-            return self._json(200, {"started": True, "stream_id": stream_id})
+            return self._json(
+                200,
+                {
+                    "started": True,
+                    "stream_id": stream_id,
+                    "denylist_version": chk.get("denylist_version"),
+                    "alpn": ALPN,
+                },
+            )
 
         if self.path == "/gw/stop":
             stream_id = body.get("stream_id")

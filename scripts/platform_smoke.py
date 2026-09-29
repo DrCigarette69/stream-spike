@@ -263,6 +263,44 @@ def main():
     st, bad = http("POST", GATEWAY + "/gw/inject_bad_ticket", {"peer_id": "peer_demo"})
     assert st == 200 and bad.get("rejected"), bad
 
+    # --- HARDENING stubs (#3 #4 #8) ---
+    st, bad_t = http(
+        "POST",
+        CONTROL + "/v1/tickets/verify",
+        {"ticket_json": '{"payload":{"session_id":"x"},"sig":"nope"}'},
+    )
+    assert not bad_t.get("ok"), bad_t
+    assert st == 403
+
+    st, dl0 = http("GET", CONTROL + "/v1/admin/denylist")
+    assert st == 200 and "version" in dl0, dl0
+    v0 = int(dl0["version"])
+    st, dl1 = http(
+        "POST",
+        CONTROL + "/v1/admin/denylist",
+        {
+            "entries": [
+                {"host_pattern": "blocked.example", "ports": [443], "reason": "hardening_test"},
+                {"host_pattern": "*.onion", "ports": [80, 443], "reason": "tor"},
+            ]
+        },
+    )
+    assert st == 200 and int(dl1.get("version", 0)) == v0 + 1, dl1
+    st, chk = http("POST", CONTROL + "/v1/dest/check", {"host": "blocked.example", "port": 443})
+    assert st == 403 and chk.get("code") == "dest_denied" and "denylist_version" in chk, chk
+
+    http("POST", CONTROL + "/v1/admin/reset", {})
+    st, fr = http(
+        "POST", CONTROL + "/v1/admin/accounts/acct_demo/freeze",
+        {"source": "hardening_smoke"},
+    )
+    assert st == 200 and fr.get("abuse_case_id") and fr.get("attribution_preserved") is True, fr
+    st, cases = http("GET", CONTROL + "/v1/admin/abuse_cases")
+    assert any(c.get("id") == fr["abuse_case_id"] for c in cases.get("cases", [])), cases
+    st, uf = http("POST", CONTROL + "/v1/admin/accounts/acct_demo/unfreeze", {})
+    assert st == 200, uf
+    print("HARDENING_SMOKE_GREEN #3 #4 #8", flush=True)
+
     print("PLATFORM_SMOKE_GREEN", flush=True)
     stop_peer.set()
     cleanup()
