@@ -20,7 +20,7 @@ A **runnable local product demo** Jeff (or any teammate) can start in one comman
 
 | # | Deliverable | Owner | Notes |
 |---|-------------|-------|-------|
-| A1.1 | Optional Iroh loopback lane (still no public egress) | Platform + Peer | `SPIKE_TRANSPORT=iroh_loopback` · `scripts/iroh_loopback_smoke.py` → **A1.1_IROH_LOOPBACK_GREEN** · [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md) |
+| A1.1 | Optional Iroh loopback lane (still no public egress) | Platform + Peer · Architect asserts | `SPIKE_TRANSPORT=iroh_loopback` · `run_local_asserts.py a11` / `iroh_loopback_smoke.py` → **A1.1_IROH_LOOPBACK_GREEN** · [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md) |
 | A1.2 | Minimal Peer tray/CLI: enroll → ISP ack → kill → resume | Peer + Designer · Architect asserts | `peer_alpha1_cli.py` → **PEER_ALPHA1_CLI_GREEN**; `./scripts/demo_alpha.sh` or `run_local_asserts.py a12` / `alpha1` |
 | A1.3 | Client quote → match → grace → add-funds mock | Platform + Designer | Mock Stripe only |
 | A1.4 | Alpha acceptance checklist video/script | Designer | Fixture walkthrough |
@@ -30,13 +30,14 @@ A **runnable local product demo** Jeff (or any teammate) can start in one comman
 - Localhost only · brand placeholder `[Brand]` never `Stream` in UX · Control updates **must** stay as small MCP-safe parts (`_zlib_*.txt`), never one 43KB blob
 - HOLD production Iroh/community relays · HOLD live KYC/Stripe
 
-## How to run Alpha-0 / Alpha-1 Peer CLI
+## How to run Alpha-0 / Alpha-1
 
 ```bash
 cd stream-spike
-python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN
+python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN (fake_relay)
+python3 scripts/run_local_asserts.py a11   # → A1.1_IROH_LOOPBACK_GREEN
 python3 scripts/run_local_asserts.py a12   # → PEER_ALPHA1_CLI_GREEN
-./scripts/demo_alpha.sh                    # DoD + A1.2 walkthrough
+./scripts/demo_alpha.sh                    # DoD + A1.1 + A1.2
 ./scripts/compose_health.sh                # → A0.4_COMPOSE_GREEN (needs Docker)
 python3 scripts/iroh_loopback_smoke.py     # → A1.1_IROH_LOOPBACK_GREEN (opt-in)
 ```
