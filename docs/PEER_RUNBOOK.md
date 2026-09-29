@@ -93,7 +93,7 @@ See [`FAKE_RELAY_PROTOCOL.md`](FAKE_RELAY_PROTOCOL.md). Peer **dials** Gateway `
 ## Failure tips
 
 | Symptom | Check |
-|---------|--------|
+|---------|-------|
 | Not on `/gw/peers` | Ack empty, kill set, wrong `SPIKE_FAKE_RELAY_DIAL`, gateway down |
 | `auth_ticket_failed` | Endpoint ID ≠ ticket `peer_endpoint_id`; secret mismatch; ALPN |
 | `egress_denied` | Dest RFC1918 / metadata / port ≠ 80\|443 (expected for gate tests) |
@@ -103,3 +103,21 @@ See [`FAKE_RELAY_PROTOCOL.md`](FAKE_RELAY_PROTOCOL.md). Peer **dials** Gateway `
 ## Non-goals
 
 Production Peer binaries, real dest dials, signed updater, mobile, community Iroh relays.
+
+## HARDENING (#5 / #6 / #7 / #8)
+
+Still stubs — no production tunnels.
+
+| Issue | Behavior |
+|-------|----------|
+| #5 P1 | `GET /peer/consent/p1` + status `ux_prompt` emit Designer strings; `POST /peer/ack` with `understood:false` → 403 `p1_ack_gate` |
+| #6 | Egress floor on AUTH + BYTES defense; `/peer/egress_check` |
+| #7 P4 | `POST /peer/kill` sets `ux_status` / `sharing_status` to **Sharing paused** + detail line |
+| #8 | Frame ALPN + ticket verify + optional `payload.alpn`; `POST /peer/verify_ticket` helper |
+
+```bash
+python3 scripts/peer_smoke.py
+# expect: PEER_SMOKE_GREEN and PEER_HARDENING_GREEN
+```
+
+Copy source: [`P1_P4_COPY.md`](P1_P4_COPY.md) · counsel owns final P1 legal.

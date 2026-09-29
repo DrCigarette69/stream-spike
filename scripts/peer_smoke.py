@@ -189,6 +189,12 @@ def main():
     assert st == 200 and bad.get("rejected"), bad
 
     # --- ISP ack gate ---
+    # checkbox gate: understood=false must not set ack
+    st, deny = http("POST", PEER + "/peer/ack", {"isp_ack_version": "v1", "understood": False})
+    assert st == 403 and deny.get("code") == "p1_ack_gate", deny
+    for needle in ("does not guarantee your ISP", "may suspend service", "I understand and want to continue"):
+        blob = json.dumps(deny)
+        assert needle in blob, needle
     http("POST", PEER + "/peer/ack", {"isp_ack_version": ""})
     time.sleep(1.2)
     st, status = http("GET", PEER + "/peer/status")
@@ -231,6 +237,10 @@ def main():
     time.sleep(0.3)
     st, k = http("POST", PEER + "/peer/kill")
     assert st == 200, k
+    blob = json.dumps(k)
+    assert "Sharing paused" in blob, k
+    assert "No traffic through your connection until you turn it back on" in blob, k
+    assert "Stream" not in blob and "waive all liability" not in blob, k
     time.sleep(0.5)
     st, status = http("GET", PEER + "/peer/status")
     assert not status.get("connected"), status
@@ -245,6 +255,7 @@ def main():
     assert not any(p["peer_id"] == "peer_demo" for p in peers.get("peers", [])), peers
 
     print("PEER_SMOKE_GREEN", flush=True)
+    print("PEER_HARDENING_GREEN", flush=True)
     return 0
 
 
