@@ -118,8 +118,20 @@ def run_peer_alpha1():
     print("PASS peer_alpha1_cli", flush=True)
 
 
+def run_iroh_loopback():
+    """A1.1 Iroh loopback smoke (opt-in; starts its own stack; no public egress)."""
+    print("\n=== iroh_loopback_smoke (A1.1) ===", flush=True)
+    p = subprocess.run([sys.executable, "-u", str(ROOT / "scripts" / "iroh_loopback_smoke.py")], cwd=str(ROOT))
+    if p.returncode != 0:
+        raise SystemExit("FAIL iroh_loopback_smoke")
+    print("PASS iroh_loopback_smoke", flush=True)
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if mode in ("a11", "iroh-loopback", "iroh_loopback"):
+        run_iroh_loopback()
+        return 0
     if mode in ("a12", "alpha1-peer", "peer-alpha1"):
         run_peer_alpha1()
         return 0
@@ -150,8 +162,9 @@ def main():
     if mode in ("alpha1", "all+a12"):
         cleanup()
         procs.clear()
+        run_iroh_loopback()
         run_peer_alpha1()
-        print("\nALPHA1_PEER_ASSERT_GREEN", flush=True)
+        print("\nALPHA1_ASSERT_GREEN", flush=True)
     return 0
 
 

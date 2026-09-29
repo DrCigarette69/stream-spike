@@ -77,11 +77,20 @@ Use these when debugging one side before full DoD.
 
 Still **stubs only** — no production tunnels.
 
+## Alpha-1 Iroh loopback (A1.1)
+
+Opt-in; default DoD stays on fake_relay. See [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md).
+
+```bash
+python3 scripts/iroh_loopback_smoke.py      # → A1.1_IROH_LOOPBACK_GREEN
+python3 scripts/run_local_asserts.py a11    # same via assert runner
+```
+
 ## Alpha-1 Peer CLI (A1.2)
 
 ```bash
 python3 scripts/peer_alpha1_cli.py          # → PEER_ALPHA1_CLI_GREEN
 python3 scripts/run_local_asserts.py a12    # same via assert runner
-python3 scripts/run_local_asserts.py alpha1 # A0 DoD then A1.2
-./scripts/demo_alpha.sh                     # DoD + A1.2 walkthrough
+python3 scripts/run_local_asserts.py alpha1 # A0 DoD then A1.1 + A1.2
+./scripts/demo_alpha.sh                     # DoD + A1.1 + A1.2 walkthrough
 ```
