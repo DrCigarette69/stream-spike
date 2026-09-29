@@ -3,7 +3,8 @@
   "forbidden_user_facing_substrings": [
     "Stream",
     "waive all liability",
-    "ISP will always allow"
+    "ISP will always allow",
+    "we are not responsible for ISP"
   ],
   "screens": [
     {
@@ -41,9 +42,48 @@
   "consent": [
     {"id": "c0_aup", "screen": "C0", "gate": "aup_accepted"},
     {"id": "c3_attest_denylist", "screen": "C3", "required_copy": ["blocked"]},
-    {"id": "p1_isp_ack", "screen": "P1", "gate": "isp_ack_version", "required_copy": ["does not guarantee your ISP"]},
+    {
+      "id": "p1_isp_ack",
+      "screen": "P1",
+      "issue": 5,
+      "gate": "isp_ack_version",
+      "title": "Before you enroll",
+      "required_copy": [
+        "does not guarantee your ISP",
+        "may suspend service",
+        "I understand and want to continue"
+      ],
+      "body_lines": [
+        "Some home internet plans prohibit running a proxy or sharing your connection this way.",
+        "Your ISP or carrier may suspend service if they decide this violates their terms.",
+        "[Brand] does not guarantee your ISP will allow this."
+      ],
+      "checkbox": "I understand and want to continue",
+      "rules": [
+        "No enroll / no HELLO / no Relay accept until isp_ack_version set",
+        "Warn, do not waive — counsel owns final legal text",
+        "Continue disabled until checkbox"
+      ]
+    },
     {"id": "p2_consent", "screen": "P2", "required_copy": ["do not read page contents", "Matching may pause", "compromised device"]},
-    {"id": "p4_kill", "screen": "P4", "required_copy": ["Sharing paused"]},
+    {
+      "id": "p4_kill",
+      "screen": "P4",
+      "issue": 7,
+      "gate": "peer_kill",
+      "cta": "Pause sharing",
+      "required_copy": [
+        "Sharing paused",
+        "No traffic through your connection until you turn it back on"
+      ],
+      "status_after_kill": "Sharing paused",
+      "detail": "No traffic through your connection until you turn it back on.",
+      "rules": [
+        "One tap / API: delist + hard-cut active streams",
+        "Stay paused until explicit resume (POST /peer/resume)",
+        "Do not auto-resume after kill"
+      ]
+    },
     {"id": "p6_cashout", "screen": "P6", "required_copy": ["Minimum cashout: $25"], "min_usd": 25}
   ],
   "capacity_copy": {
