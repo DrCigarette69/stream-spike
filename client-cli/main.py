@@ -1,1 +1,1 @@
-{{CLIENT_CONTENT}}
+@/workspace/stream-spike/client-cli/main.py
