@@ -100,6 +100,20 @@ See [`FAKE_RELAY_PROTOCOL.md`](FAKE_RELAY_PROTOCOL.md). Peer **dials** Gateway `
 | Grace early-cut assert | Peer must not close before Gateway `CLOSE` |
 | Stale peer after kill | Gateway TCP-close delist; nudge with `/gw/stop` or wait peek loop |
 
+## Alpha-1 A1.2 — Peer tray / CLI walkthrough
+
+One-command Designer walkthrough against live peer admin (enroll → ISP ack → kill → resume). Uses fake Relay only; no Iroh / no public egress.
+
+```bash
+python3 scripts/peer_alpha1_cli.py
+# expect: PEER_ALPHA1_CLI_GREEN
+# reuses :8080/:1080/:9200 if up; else starts stack like peer_smoke (empty ISP ack)
+```
+
+Covers A1.2 checklist from [`ALPHA1_WALKTHROUGH.md`](ALPHA1_WALKTHROUGH.md): P0 what-this-is · P1 gate (`understood:false` → `p1_ack_gate`) · P2 fixture greps · Sharing ON after ack · P4 kill / explicit resume · optional P6 `$25` cashout stub. Brand `[Brand]` · fail closed on `Stream` / waive strings in UX blobs.
+
+See also thin status note: [`PEER_ALPHA1.md`](PEER_ALPHA1.md).
+
 ## Non-goals
 
 Production Peer binaries, real dest dials, signed updater, mobile, community Iroh relays.
