@@ -12,6 +12,7 @@
 | [`fixtures/screens.json`](../fixtures/screens.json) | Machine map: `screen_id`, `required_copy`, consent gates, forbidden brand strings |
 | [`fixtures/codes.json`](../fixtures/codes.json) | Error code → `screen_id` |
 | [`P1_P4_COPY.md`](P1_P4_COPY.md) | HARDENING stub copy for [#5](https://github.com/DrCigarette69/stream-spike/issues/5) / [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
+| [`ALPHA1_WALKTHROUGH.md`](ALPHA1_WALKTHROUGH.md) | Alpha-1 Peer tray + Client grace walkthrough checklist |
 
 Wireframes (design outlines, not pixels): `/workspace/stream-design/wireframes-core-flows-v0.md`
 
@@ -44,6 +45,11 @@ Grace path order is **1 then 2**. Screen 3 is a fixture/P0 toggle, not mid-grace
 | `p2_consent` | P2 caps / residual risk / thin-market | Peer enroll |
 | `p4_kill` | P4 kill → `Sharing paused` — HARDENING copy in [`P1_P4_COPY.md`](P1_P4_COPY.md) | [#7](https://github.com/DrCigarette69/stream-spike/issues/7) |
 | `p6_cashout` | P6 mock Connect min **$25** | cashout gate |
+
+## Alpha
+
+- **A0:** Fixtures above match `client-cli` / Peer smoke greps (confirmed 2026-09-29 CT — no copy shift).
+- **A1:** Walkthrough checklist → [`ALPHA1_WALKTHROUGH.md`](ALPHA1_WALKTHROUGH.md) · cut plan [`ALPHA.md`](ALPHA.md)
 
 ## Designer DoD checklist
 
