@@ -109,8 +109,20 @@ def run_cli(env, cmd):
     print(f"PASS {cmd}", flush=True)
 
 
+def run_peer_alpha1():
+    """A1.2 Peer CLI walkthrough (starts its own stack)."""
+    print("\n=== peer_alpha1_cli (A1.2) ===", flush=True)
+    p = subprocess.run([sys.executable, "-u", str(ROOT / "scripts" / "peer_alpha1_cli.py")], cwd=str(ROOT))
+    if p.returncode != 0:
+        raise SystemExit("FAIL peer_alpha1_cli")
+    print("PASS peer_alpha1_cli", flush=True)
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if mode in ("a12", "alpha1-peer", "peer-alpha1"):
+        run_peer_alpha1()
+        return 0
     env = start_stack()
     grace = ["grace-stop", "assert-grace-ledger"]
     gates = [
@@ -128,11 +140,18 @@ def main():
         cmds = grace
     elif mode == "gates":
         cmds = gates
+    elif mode in ("alpha1", "all+a12"):
+        cmds = grace + gates
     else:
         cmds = grace + gates
     for cmd in cmds:
         run_cli(env, cmd)
     print("\nSPIKE_DOD_GREEN", flush=True)
+    if mode in ("alpha1", "all+a12"):
+        cleanup()
+        procs.clear()
+        run_peer_alpha1()
+        print("\nALPHA1_PEER_ASSERT_GREEN", flush=True)
     return 0
 
 

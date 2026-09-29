@@ -76,3 +76,12 @@ Use these when debugging one side before full DoD.
 - [`PHASE0_BACKLOG.md`](PHASE0_BACKLOG.md) — GitHub issue map
 
 Still **stubs only** — no production tunnels.
+
+## Alpha-1 Peer CLI (A1.2)
+
+```bash
+python3 scripts/peer_alpha1_cli.py          # → PEER_ALPHA1_CLI_GREEN
+python3 scripts/run_local_asserts.py a12    # same via assert runner
+python3 scripts/run_local_asserts.py alpha1 # A0 DoD then A1.2
+./scripts/demo_alpha.sh                     # DoD + A1.2 walkthrough
+```
