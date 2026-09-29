@@ -1,0 +1,26 @@
+{
+  "balance_grace": {
+    "screen": "Screen 1",
+    "screen_id": "screen_1_grace",
+    "event": "balance.grace_enter"
+  },
+  "balance_exhausted": {
+    "screen": "Screen 2",
+    "screen_id": "screen_2_exhausted",
+    "event": "balance.grace_exhausted"
+  },
+  "strict_unavailable": {
+    "screen": "Screen 3",
+    "screen_id": "screen_3_strict_unavailable"
+  },
+  "capacity_country_paused": {
+    "screen": "C3 try-later",
+    "copy": "Country exits paused"
+  },
+  "capacity_oversubscribed": {
+    "screen": "C3 try-later",
+    "copy": "at capacity"
+  },
+  "alpn": "stream/tunnel/1",
+  "auth_frame": "AUTH_TICKET"
+}

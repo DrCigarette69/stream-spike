@@ -1,0 +1,60 @@
+# Stream spike — local harness. No public ports required beyond localhost.
+# Network is internal; only client-cli talks to control/gateway on the compose network.
+
+services:
+  control:
+    build: ./control
+    environment:
+      SPIKE_DB: /data/spike.sqlite
+      SPIKE_TICKET_SECRET: dev-only-change-me
+      SPIKE_LISTEN: 0.0.0.0:8080
+      SPIKE_DENYLIST: /fixtures/denylist.seed.json
+    volumes:
+      - control-data:/data
+      - ./fixtures:/fixtures:ro
+    networks: [spike]
+    # ports: ["8080:8080"]  # optional host access for debugging
+
+  gateway:
+    build: ./gateway
+    environment:
+      CONTROL_URL: http://control:8080
+      SPIKE_TRANSPORT: fake_relay   # fake_relay | iroh (iroh later)
+      SPIKE_LISTEN_PROXY: 0.0.0.0:1080
+      SPIKE_FAKE_RELAY: 0.0.0.0:9100
+    depends_on: [control]
+    networks: [spike]
+
+  peer:
+    build: ./peer
+    environment:
+      CONTROL_URL: http://control:8080
+      SPIKE_TRANSPORT: fake_relay
+      SPIKE_FAKE_RELAY_DIAL: gateway:9100
+      SPIKE_ISP_ACK_VERSION: "v1"  # empty = fail closed; gate-peer-ack clears via /peer/ack
+      SPIKE_HOST_TIER: casual
+      SPIKE_PEER_ADMIN: 0.0.0.0:9200
+      SPIKE_PEER_ID: peer_demo
+      SPIKE_ENDPOINT_ID: iroh_ep_demo_001
+    depends_on: [control, gateway]
+    networks: [spike]
+
+  client-cli:
+    build: ./client-cli
+    environment:
+      CONTROL_URL: http://control:8080
+      GATEWAY_PROXY: gateway:1080
+      FIXTURES: /fixtures
+    volumes:
+      - ./fixtures:/fixtures:ro
+    depends_on: [control, gateway, peer]
+    networks: [spike]
+    profiles: [cli]   # run via: docker compose run --rm client-cli ...
+
+networks:
+  spike:
+    driver: bridge
+    internal: true   # no egress to public internet from compose network
+
+volumes:
+  control-data:

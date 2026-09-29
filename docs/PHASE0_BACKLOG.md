@@ -17,4 +17,4 @@
 
 Optional Iroh lane remains **parked** until this backlog is tracked (see spike plan §1a).
 
-Sources: threat model v0, spike plan v0, fixtures Screens 1–3.
+Sources: `stream-threat-model-v0.md`, `stream-spike-plan-v0.md`, fixtures Screens 1–3.

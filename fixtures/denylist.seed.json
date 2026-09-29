@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "entries": [
+    {"host_pattern": "*.bank.example", "ports": [443], "reason": "banking"},
+    {"host_pattern": "*.gov.example", "ports": [443], "reason": "gov"},
+    {"host_pattern": "mail.example", "ports": [25, 443], "reason": "mail"}
+  ]
+}
