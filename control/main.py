@@ -1,1 +1,1 @@
-{{CONTROL_CONTENT}}
+PLACEHOLDER_LOAD_FROM_/tmp/push_both_v2.json

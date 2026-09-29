@@ -1,1 +1,1 @@
-@/workspace/stream-spike/client-cli/main.py
+PLACEHOLDER_LOAD_FROM_/tmp/push_both_v2.json
