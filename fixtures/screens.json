@@ -4,7 +4,8 @@
     "Stream",
     "waive all liability",
     "ISP will always allow",
-    "we are not responsible for ISP"
+    "we are not responsible for ISP",
+    "real card charge"
   ],
   "screens": [
     {
@@ -84,7 +85,30 @@
         "Do not auto-resume after kill"
       ]
     },
-    {"id": "p6_cashout", "screen": "P6", "required_copy": ["Minimum cashout: $25"], "min_usd": 25}
+    {"id": "p6_cashout", "screen": "P6", "required_copy": ["Minimum cashout: $25"], "min_usd": 25},
+    {
+      "id": "c2_add_funds_mock",
+      "screen": "C2",
+      "alpha": "A1.3",
+      "gate": "mock_topup",
+      "cta": "Add funds",
+      "required_copy": [
+        "Add funds",
+        "This is a test top-up",
+        "Funds added"
+      ],
+      "body_lines": [
+        "Add funds (mock)",
+        "This is a test top-up — no real charge.",
+        "Funds added. Prepaid balance updated.",
+        "Reconnect or create a new session to keep going."
+      ],
+      "rules": [
+        "Mock Stripe only — never live KYC/Stripe",
+        "Entry from Screen 2 exhausted CTA or C2 wallet",
+        "After success: reconnect/create — do not imply free wind-down"
+      ]
+    }
   ],
   "capacity_copy": {
     "capacity_country_paused": "Country exits paused",
