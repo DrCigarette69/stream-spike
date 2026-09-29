@@ -69,8 +69,8 @@ Use these when debugging one side before full DoD.
 ## Related docs
 
 - [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) — Platform endpoints + tips  
+- [`PEER_RUNBOOK.md`](PEER_RUNBOOK.md) — Peer admin, ack/egress/kill, smoke  
 - [`FAKE_RELAY_PROTOCOL.md`](FAKE_RELAY_PROTOCOL.md) — HELLO / AUTH_TICKET / BYTES / CLOSE  
-- [`PHASE0_BACKLOG.md`](PHASE0_BACKLOG.md) — GitHub issue map  
-- Peer smoke details: see Peer Engineer notes in `scripts/peer_smoke.py` header
+- [`PHASE0_BACKLOG.md`](PHASE0_BACKLOG.md) — GitHub issue map
 
 Still **stubs only** — no production tunnels.
