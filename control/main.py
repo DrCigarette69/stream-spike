@@ -1,1 +1,1 @@
-LOAD_FROM_DISK_/workspace/stream-spike/control/main.py_LEN_43188
+PLACEHOLDER_LOAD_FROM_/workspace/full_mcp_args.json
