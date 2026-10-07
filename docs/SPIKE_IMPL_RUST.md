@@ -25,3 +25,10 @@ SPIKE_IMPL=rust ./scripts/demo_alpha.sh
 Smokes that honor the helper: `peer_smoke.py`, `peer_alpha1_cli.py`, `iroh_loopback_smoke.py`, `platform_smoke.py` (gateway).
 
 See `docs/PEER_ALPHA2.md` · `docs/ALPHA2_RUST.md` · `docs/LOCAL_ASSERTS.md`.
+
+## Compose (A2.4)
+
+```bash
+SPIKE_IMPL=rust ./scripts/compose_health.sh   # → A2.4_COMPOSE_GREEN
+# override: docker-compose.yml + docker-compose.rust.yml (Control stays Python)
+```
