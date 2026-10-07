@@ -15,6 +15,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from spike_peer_launch import control_cmd, gateway_cmd  # SPIKE_IMPL=rust|python
 CONTROL = "http://127.0.0.1:8080"
 GATEWAY = "http://127.0.0.1:1080"
 RELAY = ("127.0.0.1", 9100)
@@ -42,25 +45,17 @@ def start_services():
     env["SPIKE_LISTEN_PROXY"] = "127.0.0.1:1080"
     env["SPIKE_FAKE_RELAY"] = "127.0.0.1:9100"
     Path(env["SPIKE_DB"]).unlink(missing_ok=True)
-    procs.append(
-        subprocess.Popen(
-            [sys.executable, "-u", str(ROOT / "control/main.py")],
-            cwd=str(ROOT / "control"),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+    for argv, cwd in (control_cmd(env), gateway_cmd(env)):
+        procs.append(
+            subprocess.Popen(
+                argv,
+                cwd=str(cwd),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
         )
-    )
-    time.sleep(0.4)
-    procs.append(
-        subprocess.Popen(
-            [sys.executable, "-u", str(ROOT / "gateway/main.py")],
-            cwd=str(ROOT / "gateway"),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-    )
+        time.sleep(0.4)
     for _ in range(40):
         try:
             st, _ = http("GET", CONTROL + "/health")
