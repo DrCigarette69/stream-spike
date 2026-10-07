@@ -28,3 +28,16 @@ HTTP admin mirrors Python gateway: `/health`, `/gw/peers`, `/gw/start`, `/gw/sto
 Fake relay is NDJSON (`docs/FAKE_RELAY_PROTOCOL.md`). Keep Python `gateway/` as fallback.
 
 Asserts / `demo_alpha.sh` wiring: **A2.3** (Architect).
+
+## Compose images (A2.4)
+
+Dockerfiles: `crates/stream-gateway/Dockerfile`, `crates/stream-peer/Dockerfile` (release binary + curl healthcheck).
+
+```bash
+# from repo root
+SPIKE_IMPL=rust ./scripts/compose_health.sh   # → A2.4_COMPOSE_GREEN
+# equivalent:
+sudo docker compose -f docker-compose.yml -f docker-compose.rust.yml up -d --build
+```
+
+Control remains the Python image from `docker-compose.yml`. Do not commit `target/`.
