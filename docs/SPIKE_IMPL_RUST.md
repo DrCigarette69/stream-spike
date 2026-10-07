@@ -1,21 +1,27 @@
-# SPIKE_IMPL=rust (A2.1)
+# SPIKE_IMPL=rust (A2.3)
 
-Helper: `scripts/spike_peer_launch.py` (`peer_cmd`).
+Helper: `scripts/spike_peer_launch.py` — `peer_cmd()` · `gateway_cmd()` · `control_cmd()` (always Python).
 
-Until `peer_smoke.py` imports the helper on tip, launch manually:
+| `SPIKE_IMPL` | Peer | Gateway | Control |
+|--------------|------|---------|---------|
+| unset / `python` (default) | `peer/main.py` | `gateway/main.py` | `control/main.py` |
+| `rust` | `rust/target/debug/stream-peer` | `rust/target/debug/stream-gateway` | `control/main.py` |
+
+Same env/ports: **8080** Control · **1080** Gateway admin · **9100** fake Relay · **9101** iroh loopback · **9200** Peer admin.
 
 ```bash
-cd rust && cargo build -p stream-peer
-# terminal A
-CONTROL_URL=http://127.0.0.1:8080 SPIKE_LISTEN=127.0.0.1:8080 python3 -u control/main.py
-# terminal B
-CONTROL_URL=http://127.0.0.1:8080 SPIKE_FAKE_RELAY=127.0.0.1:9100 SPIKE_LISTEN_PROXY=127.0.0.1:1080 python3 -u gateway/main.py
-# terminal C
-CONTROL_URL=http://127.0.0.1:8080 SPIKE_PEER_ADMIN=127.0.0.1:9200 SPIKE_FAKE_RELAY_DIAL=127.0.0.1:9100 \
-  SPIKE_ISP_ACK_VERSION=v1 SPIKE_PEER_ID=peer_demo SPIKE_ENDPOINT_ID=iroh_ep_demo_001 \
-  ./rust/target/debug/stream-peer
+cd rust && ./pin-msrv-deps.sh   # if needed
+cd rust && cargo build -p stream-peer -p stream-gateway
+
+# Default Python peer+gateway (DoD must stay green)
+python3 scripts/run_local_asserts.py all          # → SPIKE_DOD_GREEN
+
+# Rust peer+gateway
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py a11   # → A1.1_IROH_LOOPBACK_GREEN
+SPIKE_IMPL=rust ./scripts/demo_alpha.sh
 ```
 
-Or after wiring: `SPIKE_IMPL=rust python3 scripts/peer_smoke.py`.
+Smokes that honor the helper: `peer_smoke.py`, `peer_alpha1_cli.py`, `iroh_loopback_smoke.py`, `platform_smoke.py` (gateway), `a13_mock_topup_smoke.py`.
 
-See `docs/PEER_ALPHA2.md`.
+See `docs/PEER_ALPHA2.md` · `docs/ALPHA2_RUST.md` · `docs/LOCAL_ASSERTS.md`.
