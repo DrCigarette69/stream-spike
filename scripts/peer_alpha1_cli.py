@@ -21,6 +21,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from spike_peer_launch import control_cmd, gateway_cmd, peer_cmd  # SPIKE_IMPL=rust|python
 CONTROL = "http://127.0.0.1:8080"
 GATEWAY = "http://127.0.0.1:1080"
 PEER = "http://127.0.0.1:9200"
@@ -96,14 +99,10 @@ def start_stack():
     env["SPIKE_PEER_ID"] = "peer_demo"
     env["SPIKE_ENDPOINT_ID"] = "iroh_ep_demo_001"
     env["SPIKE_HEARTBEAT_S"] = "2"
-    for cwd, script in (
-        (ROOT / "control", "main.py"),
-        (ROOT / "gateway", "main.py"),
-        (ROOT / "peer", "main.py"),
-    ):
+    for argv, cwd in (control_cmd(env), gateway_cmd(env), peer_cmd(env)):
         procs.append(
             subprocess.Popen(
-                [sys.executable, "-u", str(cwd / script)],
+                argv,
                 cwd=str(cwd),
                 env=env,
                 stdout=subprocess.PIPE,
