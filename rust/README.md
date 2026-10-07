@@ -4,8 +4,7 @@ Workspace members: `stream-proto`, `stream-peer`, `stream-gateway`.
 
 - **MSRV:** rustc 1.85
 - **Pinned deps:** axum 0.7.9, encoding_rs 0.8.35, idna_adapter 1.2.0, icu_* 1.5  
-  Commit `Cargo.lock`. If lock regenerates on a newer rustc, re-pin:
-  `cargo update encoding_rs --precise 0.8.35` and matching icu/idna pins.
+  If `Cargo.lock` is missing: `cd rust && ./pin-msrv-deps.sh` (or `./restore_cargo_lock.sh`), then commit the lock.
 
 ```bash
 cd rust && cargo check
