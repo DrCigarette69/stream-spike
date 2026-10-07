@@ -137,3 +137,37 @@ See [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md). Default transport remains `fake_rela
 | Assert mode | `python3 scripts/run_local_asserts.py a13` / `mock-topup` |
 
 Credits `accounts.balance_usd`; does **not** auto-resume a stopped session (reconnect = new match+session). Rejects `amount_usd <= 0` with 400. Peer cashout mock remains `POST /v1/mock/cashout`.
+
+## A2.2 Rust Gateway (`SPIKE_IMPL=rust`)
+
+Parity binary: `rust/target/debug/stream-gateway` (or `cargo run -p stream-gateway`).
+
+Python `gateway/` remains the `SPIKE_IMPL=python` fallback. Same env vars / ports.
+
+```bash
+# Control + Peer stay Python for this gate
+export SPIKE_DB=/tmp/spike_a22.sqlite
+export SPIKE_LISTEN=127.0.0.1:8080
+export SPIKE_TICKET_SECRET=dev-only-change-me
+export SPIKE_DENYLIST=$PWD/fixtures/denylist.seed.json
+python3 -u control/main.py &
+
+export SPIKE_PEER_ADMIN=127.0.0.1:9200
+export SPIKE_ISP_ACK_VERSION=v1
+export SPIKE_FAKE_RELAY_DIAL=127.0.0.1:9100
+export CONTROL_URL=http://127.0.0.1:8080
+python3 -u peer/main.py &
+
+export SPIKE_LISTEN_PROXY=127.0.0.1:1080
+export SPIKE_FAKE_RELAY=127.0.0.1:9100
+export CONTROL_URL=http://127.0.0.1:8080
+(cd rust && cargo run -p stream-gateway)
+
+curl -s http://127.0.0.1:1080/health   # ok, impl=rust, hardening=[…]
+curl -s http://127.0.0.1:1080/gw/peers
+curl -s -X POST http://127.0.0.1:1080/gw/inject_bad_ticket \
+  -H 'content-type: application/json' -d '{"peer_id":"peer_demo"}'
+# → {"rejected":true,…}
+```
+
+Iroh loopback: `SPIKE_TRANSPORT=iroh_loopback` binds `SPIKE_IROH_LOOPBACK` (default `127.0.0.1:9101`) and **refuses non-loopback**. Asserts wire `SPIKE_IMPL=rust` in A2.3.
