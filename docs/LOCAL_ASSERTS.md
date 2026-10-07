@@ -110,3 +110,15 @@ python3 scripts/run_local_asserts.py a12    # same via assert runner
 python3 scripts/run_local_asserts.py alpha1 # A0 DoD then A1.1 + A1.2
 ./scripts/demo_alpha.sh                     # DoD + A1.1 + A1.2 walkthrough
 ```
+
+## Alpha-1 mock Stripe top-up (A1.3)
+
+Mock customer credit only — **no live Stripe/KYC**. Designer fixture `c2_add_funds_mock`.
+
+```bash
+python3 scripts/a13_mock_topup_smoke.py     # → A1.3_MOCK_TOPUP_GREEN
+python3 scripts/run_local_asserts.py a13    # same via assert runner
+python3 scripts/run_local_asserts.py mock-topup
+```
+
+See [`A1_3_COPY.md`](A1_3_COPY.md) · [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) §A1.3.

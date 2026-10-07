@@ -131,6 +131,15 @@ def run_iroh_loopback():
     print("PASS iroh_loopback_smoke", flush=True)
 
 
+def run_a13_mock_topup():
+    """A1.3 mock Stripe top-up smoke (starts its own stack)."""
+    print("\n=== a13_mock_topup_smoke (A1.3) ===", flush=True)
+    p = subprocess.run([sys.executable, "-u", str(ROOT / "scripts" / "a13_mock_topup_smoke.py")], cwd=str(ROOT))
+    if p.returncode != 0:
+        raise SystemExit("FAIL a13_mock_topup_smoke")
+    print("PASS a13_mock_topup_smoke", flush=True)
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     if mode in ("a11", "iroh-loopback", "iroh_loopback"):
@@ -138,6 +147,9 @@ def main():
         return 0
     if mode in ("a12", "alpha1-peer", "peer-alpha1"):
         run_peer_alpha1()
+        return 0
+    if mode in ("a13", "mock-topup", "mock_topup"):
+        run_a13_mock_topup()
         return 0
     env = start_stack()
     grace = ["grace-stop", "assert-grace-ledger"]
