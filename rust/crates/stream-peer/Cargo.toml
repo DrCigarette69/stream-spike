@@ -1,0 +1,24 @@
+[package]
+name = "stream-peer"
+version = "0.1.0"
+edition = "2021"
+description = "Stream Peer agent (Rust) — ISP ack, egress floor, kill, AUTH_TICKET"
+
+[[bin]]
+name = "stream-peer"
+path = "src/main.rs"
+
+[dependencies]
+stream-proto = { path = "../stream-proto" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axum = "=0.7.9"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ipnet = "2"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+bytes = "1"
