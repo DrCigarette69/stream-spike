@@ -1,0 +1,34 @@
+# Alpha-2 A2.4 — Rust Peer + Gateway images; Control stays Python.
+# Usage:
+#   sudo docker compose -f docker-compose.yml -f docker-compose.rust.yml up -d --build
+#   SPIKE_IMPL=rust ./scripts/compose_health.sh   # → A2.4_COMPOSE_GREEN
+# Default (Python) path unchanged: sudo docker compose up / ./scripts/compose_health.sh
+
+services:
+  gateway:
+    build:
+      context: ./rust
+      dockerfile: crates/stream-gateway/Dockerfile
+      args:
+        RUST_VERSION: "1.85"
+    image: stream-spike-gateway:rust
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:1080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 8s
+
+  peer:
+    build:
+      context: ./rust
+      dockerfile: crates/stream-peer/Dockerfile
+      args:
+        RUST_VERSION: "1.85"
+    image: stream-spike-peer:rust
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9200/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
