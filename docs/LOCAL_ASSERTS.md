@@ -66,6 +66,22 @@ Use these when debugging one side before full DoD.
 | `SPIKE_DENYLIST` | Path to `fixtures/denylist.seed.json` |
 | `FIXTURES` | Path to `fixtures/` for CLI copy asserts |
 
+
+## SPIKE_IMPL (A2.3)
+
+| Value | Behavior |
+|-------|----------|
+| unset / `python` | Python `peer/` + `gateway/` (default; DoD must stay green) |
+| `rust` | `rust/target/debug/stream-peer` + `stream-gateway`; Control stays Python |
+
+```bash
+python3 scripts/run_local_asserts.py all
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py all
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py a11
+```
+
+Helper: [`scripts/spike_peer_launch.py`](../scripts/spike_peer_launch.py). Details: [`SPIKE_IMPL_RUST.md`](SPIKE_IMPL_RUST.md).
+
 ## Related docs
 
 - [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) — Platform endpoints + tips  
