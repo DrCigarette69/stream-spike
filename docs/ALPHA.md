@@ -38,7 +38,7 @@ python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN (fake_relay)
 python3 scripts/run_local_asserts.py a11   # → A1.1_IROH_LOOPBACK_GREEN
 python3 scripts/run_local_asserts.py a12   # → PEER_ALPHA1_CLI_GREEN
 python3 scripts/run_local_asserts.py a13   # → A1.3_MOCK_TOPUP_GREEN
-./scripts/demo_alpha.sh                    # DoD + A1.2 (+ A1.1 when smoke on tip)
+./scripts/demo_alpha.sh                    # DoD + A1.1 + A1.2 + A1.3 mock top-up
 ./scripts/compose_health.sh                # → A0.4_COMPOSE_GREEN (needs Docker)
 SPIKE_IMPL=rust ./scripts/compose_health.sh # → A2.4_COMPOSE_GREEN (Rust peer+gateway)
 python3 scripts/iroh_loopback_smoke.py     # → A1.1_IROH_LOOPBACK_GREEN (opt-in)

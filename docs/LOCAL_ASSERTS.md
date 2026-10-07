@@ -108,7 +108,7 @@ python3 scripts/run_local_asserts.py a11    # same via assert runner
 python3 scripts/peer_alpha1_cli.py          # → PEER_ALPHA1_CLI_GREEN
 python3 scripts/run_local_asserts.py a12    # same via assert runner
 python3 scripts/run_local_asserts.py alpha1 # A0 DoD then A1.1 + A1.2
-./scripts/demo_alpha.sh                     # DoD + A1.1 + A1.2 walkthrough
+./scripts/demo_alpha.sh                     # DoD + A1.1 + A1.2 + A1.3 mock top-up
 ```
 
 ## Alpha-1 mock Stripe top-up (A1.3)
