@@ -61,10 +61,14 @@ def start_stack():
             "FIXTURES": str(ROOT / "fixtures"),
         }
     )
-    for cwd in (ROOT / "control", ROOT / "gateway", ROOT / "peer"):
+    # Control always Python; gateway+peer honor SPIKE_IMPL (python|rust).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from spike_peer_launch import control_cmd, gateway_cmd, peer_cmd
+
+    for argv, cwd in (control_cmd(env), gateway_cmd(env), peer_cmd(env)):
         procs.append(
             subprocess.Popen(
-                [sys.executable, "-u", str(cwd / "main.py")],
+                argv,
                 cwd=str(cwd),
                 env=env,
                 stdout=subprocess.PIPE,
