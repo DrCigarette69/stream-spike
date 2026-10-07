@@ -171,3 +171,25 @@ curl -s -X POST http://127.0.0.1:1080/gw/inject_bad_ticket \
 ```
 
 Iroh loopback: `SPIKE_TRANSPORT=iroh_loopback` binds `SPIKE_IROH_LOOPBACK` (default `127.0.0.1:9101`) and **refuses non-loopback**. Asserts wire `SPIKE_IMPL=rust` in A2.3.
+
+## A2.4 Compose Rust Peer/Gateway images
+
+Multi-stage Dockerfiles under `rust/crates/stream-gateway/Dockerfile` and `rust/crates/stream-peer/Dockerfile` (`cargo build --release`, rustc 1.85). Control stays Python.
+
+| Path | Proof |
+|------|-------|
+| Default Python | `./scripts/compose_health.sh` → **A0.4_COMPOSE_GREEN** |
+| Rust peer+gateway | `SPIKE_IMPL=rust ./scripts/compose_health.sh` → **A2.4_COMPOSE_GREEN** |
+
+```bash
+# Rust stack (host networking; localhost binds)
+sudo docker compose -f docker-compose.yml -f docker-compose.rust.yml up -d --build
+# or:
+SPIKE_IMPL=rust ./scripts/compose_health.sh
+
+curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:1080/health   # must include "impl":"rust"
+curl -s http://127.0.0.1:9200/health
+```
+
+Override file: `docker-compose.rust.yml` (does not change default Python compose). Healthchecks use `curl` (Rust images have no Python). Commit `rust/Cargo.lock` (or run `./pin-msrv-deps.sh` if missing).
