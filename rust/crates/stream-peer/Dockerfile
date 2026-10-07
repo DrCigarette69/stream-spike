@@ -1,12 +1,11 @@
 # Stream Peer (Rust) — multi-stage. Build context: rust/ workspace root.
-#   docker build -f crates/stream-peer/Dockerfile -t stream-peer:rust .
 ARG RUST_VERSION=1.85
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY pin-msrv-deps.sh restore_cargo_lock.sh ./
-COPY crates ./crates
-RUN cargo build --release -p stream-peer \
+COPY . .
+RUN chmod +x pin-msrv-deps.sh restore_cargo_lock.sh 2>/dev/null || true \
+  && if [ ! -f Cargo.lock ]; then ./pin-msrv-deps.sh; fi \
+  && cargo build --release -p stream-peer \
   && strip target/release/stream-peer
 
 FROM debian:bookworm-slim
