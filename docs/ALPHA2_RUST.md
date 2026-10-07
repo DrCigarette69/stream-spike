@@ -40,7 +40,7 @@ Python Peer/Gateway remain as `SPIKE_IMPL=python` fallback until Rust is default
 | A2.1 Peer Rust parity (ack/egress/kill/ticket) | Peer Engineer |
 | A2.2 Gateway Rust parity (denylist/relay/meter/grace) | Platform Engineer |
 | A2.3 Asserts wire `SPIKE_IMPL=rust` | Stream Architect |
-| A2.4 Compose Rust images | Platform |
+| A2.4 Compose Rust images | Platform — **DONE** (`docker-compose.rust.yml` · `SPIKE_IMPL=rust ./scripts/compose_health.sh` → **A2.4_COMPOSE_GREEN**) |
 | A2.5 Control→Rust (optional later) | Platform + Architect |
 
 ## Out of Alpha-2
