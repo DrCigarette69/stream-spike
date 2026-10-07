@@ -22,7 +22,7 @@ A **runnable local product demo** Jeff (or any teammate) can start in one comman
 |---|-------------|-------|-------|
 | A1.1 | Optional Iroh loopback lane (still no public egress) | Platform + Peer · Architect asserts | `SPIKE_TRANSPORT=iroh_loopback` · `run_local_asserts.py a11` / `iroh_loopback_smoke.py` → **A1.1_IROH_LOOPBACK_GREEN** · [`IROH_LOOPBACK.md`](IROH_LOOPBACK.md) |
 | A1.2 | Minimal Peer tray/CLI: enroll → ISP ack → kill → resume | Peer + Designer · Architect asserts | `peer_alpha1_cli.py` → **PEER_ALPHA1_CLI_GREEN**; `./scripts/demo_alpha.sh` or `run_local_asserts.py a12` / `alpha1` |
-| A1.3 | Client quote → match → grace → add-funds mock | Platform + Designer | Mock Stripe only |
+| A1.3 | Client quote → match → grace → add-funds mock | Platform + Designer | **DONE** mock Stripe — `a13_mock_topup_smoke.py` → **A1.3_MOCK_TOPUP_GREEN**; `POST /v1/mock/topup`; client-cli `mock-topup` |
 | A1.4 | Alpha acceptance checklist video/script | Designer | Fixture walkthrough |
 
 ## Hard rules (unchanged)
@@ -37,7 +37,27 @@ cd stream-spike
 python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN (fake_relay)
 python3 scripts/run_local_asserts.py a11   # → A1.1_IROH_LOOPBACK_GREEN
 python3 scripts/run_local_asserts.py a12   # → PEER_ALPHA1_CLI_GREEN
-./scripts/demo_alpha.sh                    # DoD + A1.1 + A1.2
+python3 scripts/run_local_asserts.py a13   # → A1.3_MOCK_TOPUP_GREEN
+./scripts/demo_alpha.sh                    # DoD + A1.2 (+ A1.1 when smoke on tip)
 ./scripts/compose_health.sh                # → A0.4_COMPOSE_GREEN (needs Docker)
 python3 scripts/iroh_loopback_smoke.py     # → A1.1_IROH_LOOPBACK_GREEN (opt-in)
+python3 scripts/a13_mock_topup_smoke.py    # → A1.3_MOCK_TOPUP_GREEN (mock Stripe)
+```
+
+### Alpha-2 (Rust cut — next)
+
+Peer + Gateway move to **Rust**; Control + asserts stay Python. Locked decision and owners: [`ALPHA2_RUST.md`](ALPHA2_RUST.md).
+
+| # | Deliverable | Owner | Notes |
+|---|-------------|-------|-------|
+| A2.0 | Rust workspace + `stream-proto` | Grok Bot + Architect | `rust/` crates; MSRV 1.85 |
+| A2.1 | Peer Rust parity (ack/egress/kill/ticket) | Peer Engineer | Same env / ports as Python peer |
+| A2.2 | Gateway Rust parity (denylist/relay/meter/grace) | Platform Engineer | SOCKS path + fake relay |
+| A2.3 | Asserts wire `SPIKE_IMPL=rust` | Stream Architect | DoD green on Rust binaries |
+| A2.4 | Compose Rust images | Platform | Docker images for peer/gateway |
+| A2.5 | Control→Rust (optional later) | Platform + Architect | After APIs freeze |
+
+```bash
+cd rust && cargo check
+# later: SPIKE_IMPL=rust ./scripts/demo_alpha.sh
 ```
