@@ -58,6 +58,12 @@ Peer + Gateway move to **Rust**; Control + asserts stay Python. Locked decision 
 | A2.5 | Control→Rust (optional later) | Platform + Architect | After APIs freeze |
 
 ```bash
-cd rust && cargo check
-# later: SPIKE_IMPL=rust ./scripts/demo_alpha.sh
+cd rust && ./pin-msrv-deps.sh   # if needed
+cd rust && cargo build -p stream-peer -p stream-gateway
+python3 scripts/run_local_asserts.py all                 # default python → SPIKE_DOD_GREEN
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py all # → SPIKE_DOD_GREEN
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py a11 # → A1.1_IROH_LOOPBACK_GREEN
+SPIKE_IMPL=rust ./scripts/demo_alpha.sh
 ```
+
+A2.3 wiring: [`SPIKE_IMPL_RUST.md`](SPIKE_IMPL_RUST.md) · helper `scripts/spike_peer_launch.py`.
