@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/stream-proto",
+  "crates/stream-peer",
+  "crates/stream-gateway",
+]
