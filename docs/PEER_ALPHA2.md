@@ -19,7 +19,7 @@ export SPIKE_ENDPOINT_ID=iroh_ep_demo_001
 ./rust/target/debug/stream-peer
 ```
 
-Smokes (Python control + gateway, Rust peer):
+Smokes (`SPIKE_IMPL=rust` → Rust peer + gateway; Control stays Python):
 
 ```bash
 SPIKE_IMPL=rust python3 scripts/peer_smoke.py
@@ -32,7 +32,7 @@ SPIKE_IMPL=rust python3 scripts/iroh_loopback_smoke.py
 # -> A1.1_IROH_LOOPBACK_GREEN
 ```
 
-Default `SPIKE_IMPL` / unset still launches `peer/main.py`. Architect A2.3 wires asserts / `demo_alpha.sh`.
+Default `SPIKE_IMPL` / unset still launches Python `peer/` + `gateway/`. A2.3: asserts / `demo_alpha.sh` honor `SPIKE_IMPL` via `scripts/spike_peer_launch.py`.
 
 ## Parity table
 

@@ -22,6 +22,6 @@ SPIKE_IMPL=rust python3 scripts/run_local_asserts.py a11   # → A1.1_IROH_LOOPB
 SPIKE_IMPL=rust ./scripts/demo_alpha.sh
 ```
 
-Smokes that honor the helper: `peer_smoke.py`, `peer_alpha1_cli.py`, `iroh_loopback_smoke.py`, `platform_smoke.py` (gateway), `a13_mock_topup_smoke.py`.
+Smokes that honor the helper: `peer_smoke.py`, `peer_alpha1_cli.py`, `iroh_loopback_smoke.py`, `platform_smoke.py` (gateway).
 
 See `docs/PEER_ALPHA2.md` · `docs/ALPHA2_RUST.md` · `docs/LOCAL_ASSERTS.md`.

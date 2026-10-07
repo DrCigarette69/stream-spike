@@ -18,8 +18,9 @@
 Rust Peer/Gateway **must** pass existing DoD with same env vars (`SPIKE_*`, `CONTROL_URL`, ports 1080/9100/9200). Proof:
 
 ```bash
-SPIKE_IMPL=rust ./scripts/demo_alpha.sh   # or run_local_asserts after wiring
-# → SPIKE_DOD_GREEN + A1.* green
+SPIKE_IMPL=rust ./scripts/demo_alpha.sh
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py all   # → SPIKE_DOD_GREEN
+# → SPIKE_DOD_GREEN + A1.* green (A2.3 wired)
 ```
 
 Python Peer/Gateway remain as `SPIKE_IMPL=python` fallback until Rust is default.
