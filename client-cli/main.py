@@ -401,6 +401,21 @@ def cmd_gate_cashout():
     return 0
 
 
+from a13_topup import bind as _a13_bind, cmd_mock_topup
+_a13_bind(
+    http=http,
+    match_session=match_session,
+    start_tunnel=start_tunnel,
+    wait_events=wait_events,
+    emit_screen=emit_screen,
+    load_screens=load_screens,
+    forbid_brand=forbid_brand,
+    reset=reset,
+    CONTROL_URL=CONTROL,
+    json_mod=json,
+)
+
+
 COMMANDS = {
     "grace-stop": cmd_grace_stop,
     "assert-grace-ledger": cmd_assert_grace_ledger,
@@ -413,6 +428,8 @@ COMMANDS = {
     "gate-strict-unavailable": cmd_gate_strict_unavailable,
     "gate-aup": cmd_gate_aup,
     "gate-cashout": cmd_gate_cashout,
+    "mock-topup": cmd_mock_topup,
+    "a13-mock-topup": cmd_mock_topup,
 }
 
 
