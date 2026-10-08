@@ -1,0 +1,4 @@
+# Fresh resolves pick deps compatible with the local rustc (e.g. 1.85.1),
+# avoiding idna_adapter 1.2.2 which needs rustc 1.86.
+[resolver]
+incompatible-rust-versions = "fallback"
