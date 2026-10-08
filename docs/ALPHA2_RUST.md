@@ -43,6 +43,19 @@ Python Peer/Gateway remain as `SPIKE_IMPL=python` fallback until Rust is default
 | A2.4 Compose Rust images | Platform — **DONE** (`docker-compose.rust.yml` · `SPIKE_IMPL=rust ./scripts/compose_health.sh` → **A2.4_COMPOSE_GREEN**) |
 | A2.5 Control→Rust (optional later) | Platform + Architect |
 
+## DONE — 2026-10-08 CT
+
+Epic done criterion met on tip `5428be3` (rustc 1.85.1, pinned `Cargo.lock`; Control stays Python):
+
+- `SPIKE_IMPL=rust python3 scripts/run_local_asserts.py all` → **SPIKE_DOD_GREEN** (default Python also green)
+- `SPIKE_IMPL=rust … a11` → **A1.1_IROH_LOOPBACK_GREEN** · `a12` → **PEER_ALPHA1_CLI_GREEN** · `a13` → **A1.3_MOCK_TOPUP_GREEN**
+- `SPIKE_IMPL=rust bash scripts/demo_alpha.sh` → all four markers green (gateway `"impl":"rust"`)
+- `SPIKE_IMPL=rust bash scripts/compose_health.sh` → **A2.4_COMPOSE_GREEN**
+
+A2.1–A2.4 done. A2.5 (Control→Rust) stays backlog.
+
+Known nits (follow-up): `scripts/*.sh` committed 100644 (use `bash scripts/…` until chmod +x lands); `rust/Cargo.lock` not yet tracked — fresh resolve pulls `idna_adapter 1.2.2` (needs rustc 1.86); commit the pinned lock (`idna_adapter 1.2.0`).
+
 ## Out of Alpha-2
 
 Production egress, community Iroh relays, live Stripe/KYC, rewriting asserts in Rust.
