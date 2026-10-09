@@ -66,12 +66,13 @@ The existing `AUTH_TICKET` fields stay unchanged. `iroh_local` adds three:
 ## Run (target)
 
 ```bash
-cd rust && cargo build --locked --features iroh -p stream-peer -p stream-gateway
-sudo bash scripts/a3_netns_up.sh                              # br-a3 + 3 namespaces, no default route
-SPIKE_IMPL=rust python3 scripts/run_local_asserts.py a3      # → A3_IROH_LOCAL_GREEN
-SPIKE_IMPL=rust SPIKE_A3=1 bash scripts/demo_alpha.sh         # Alpha proof + A3 block
-sudo bash scripts/a3_netns_down.sh
-python3 scripts/run_local_asserts.py all                      # default path still → SPIKE_DOD_GREEN
+# Needs passwordless `sudo -n`. Each smoke builds its own iroh binaries into rust/target/iroh
+# and creates/tears down its own netns. Do NOT run a3_netns_up.sh first: a34 refuses to start
+# if ns-gw / ns-peer-* already exist. a34 is single-instance (lock /tmp/stream-spike-a34.lock).
+python3 scripts/run_local_asserts.py a3                      # a30..a34 + refusal/UX greps → A3_IROH_LOCAL_GREEN
+SPIKE_A3=1 bash scripts/demo_alpha.sh                        # Alpha proof + A3 block → A3_IROH_LOCAL_GREEN
+python3 scripts/run_local_asserts.py all                     # default path still → SPIKE_DOD_GREEN
+# a3_netns_up.sh / _down.sh remain for manual poking at the A3.4 topology (run _down.sh after).
 ```
 
 Done = A3.0–A3.5 green on one tip, existing five greens unchanged, A3.6 optional.
