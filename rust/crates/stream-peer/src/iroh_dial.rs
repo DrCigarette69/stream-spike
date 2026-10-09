@@ -27,7 +27,7 @@ use tokio::time::{sleep, timeout, Duration};
 pub const ENV_BIND: &str = "SPIKE_IROH_BIND";
 pub const ENV_GATEWAY_ADDR: &str = "SPIKE_IROH_GATEWAY_ADDR";
 pub const DEFAULT_BIND: &str = "127.0.0.1:0";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn endpoint_id_of(bytes: &[u8; 32]) -> EndpointId {
     SecretKey::from_bytes(bytes).public()

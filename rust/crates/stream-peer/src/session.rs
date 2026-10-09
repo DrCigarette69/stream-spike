@@ -25,7 +25,7 @@ pub enum SessionEnd {
 }
 
 pub(crate) fn gateway_reject(transport: &str, msg: &Value) -> Option<String> {
-    if !config::is_iroh_local(transport) {
+    if !config::is_iroh_local(transport) && !config::is_iroh_pilot(transport) {
         return None;
     }
     let why = msg
@@ -65,7 +65,7 @@ where
             g.cfg.transport.clone(),
         )
     };
-    let iroh_local = config::is_iroh_local(&transport);
+    let iroh_local = config::is_iroh_local(&transport) || config::is_iroh_pilot(&transport);
     let mut reader = BufReader::new(reader);
 
     let hello = json!({
@@ -129,6 +129,7 @@ where
                 || g.isp_ack_version.is_empty()
                 || g.force_disconnect
                 || (iroh_local && !g.p2_consent)
+                || (g.cfg.p9_required() && !g.p9_ack)
             {
                 break;
             }

@@ -116,5 +116,42 @@ lock, A4.2 relay (RelayOnly dial via `check_relay_url_with`), `check_transport_p
 in the pilot build, and stream-peer forwarding `a4_local` so the binary-level a4 lane
 can use the TEST-NET-2 exception and test resolver.
 
+## A4.4 part 2: relay-only pilot dial (feature `iroh_pilot`)
+
+Build: `cargo build --locked -p stream-peer --features iroh_pilot` (pilot package) or
+`--features iroh_pilot,a4_local` (on-box lane only: allows relay `http://10.73.0.254:<port>/`
+and TEST-NET-2 stand-ins). Without the feature, `SPIKE_TRANSPORT=iroh_pilot` still refuses
+with `iroh_pilot_not_built` and admin stays up.
+
+Startup (exit 2 before anything binds): `peer a4_refuse_transport_not_pilot:<t>` unless
+`SPIKE_TRANSPORT=iroh_pilot`; `peer a4_refuse_relay_config:<url|<unset>>` unless
+`SPIKE_RELAY_ALLOW_URL` is exactly one acceptable relay (n0/community hosts, local names,
+non-public IPs, `http` outside a4_local, lists all refused by `RelayAllow::parse`).
+
+Endpoint (`iroh_pilot_dial.rs`): `RelayMode::Custom(RelayMap::from(<our relay>))`,
+`clear_discovery()`, `PathSelection::RelayOnly`, Peer key, guarded private binds
+(`SPIKE_IROH_BIND`, default 127.0.0.1:0). Relay TLS is always verified; a unit test fails if
+the skip-verify builder option appears anywhere in `stream-peer/src`.
+`peer iroh_pilot bound [..] relay=<url> path=relay_only discovery=off`.
+
+Dial target: `SPIKE_GATEWAY_ENDPOINT_ID` must match; relay = `SPIKE_IROH_GATEWAY_RELAY_URL`
+(default: the allowed URL) checked with `check_relay_url_with` (else `relay_refused`);
+`check_relay_required`; any `SPIKE_IROH_GATEWAY_ADDR` entries pass the A3.0 private guard but
+are never dialed. Dial = `EndpointAddr(gateway).with_relay_url(relay)` after
+`UX_SCREEN p1_isp_ack` -> `p2_consent` -> `p9_allowlist`.
+AUTH_TICKET (pilot): ticket `relay_url` (top level or `payload`) must be our relay
+(`relay_refused`), empty `direct_addrs` needs one (`relay_required`); per-OPEN reject only.
+
+Direct-path watcher: polls `conn_type(gateway)` every 100 ms; `Direct`/`Mixed` -> close all
+pilot egress (CLOSE reason `relay_path_required`), kill the transport via the slot (<= 2 s),
+`a4_refuse_relay_refused:direct_path:<udp addr>`, P8 `relay_path_required`, no auto-retry.
+Gateway `AUTH_REJECT` / `endpoint_mismatch` is terminal for iroh_pilot as for iroh_local.
+A pilot egress P8 (`egress_*`) is not replaced by a later generic `connection_lost`.
+
+E2E status: not yet. Gateway has no relay support and there is no self-hosted relay on
+main (A4.2), and no data frame (A4.3), so a44 stays at `A4.4_PEER_EGRESS_PART1_GREEN`.
+Manual a4_local run in a no-default-route netns: bound relay-only, P1->P2->P9 printed, dial
+times out (relay unreachable), P8 egress_off, kill -> P4.
+
 ## Open / asks
 - Kill-switch reason is `egress_off` everywhere (guard, fixture `reason_lines`, Peer).

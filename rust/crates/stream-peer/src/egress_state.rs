@@ -39,6 +39,8 @@ pub fn build_plane_from(
     plane.max_streams = crate::pilot_egress::max_streams_from(
         std::env::var(crate::pilot_egress::ENV_MAX_STREAMS).ok().as_deref(),
     );
+    plane.relay_allow = stream_proto::guard::relay_allow_from_env(stream_proto::guard::Lane::build())
+        .map_err(|e| e.log_line())?;
     if let Some(b) = budget {
         plane.attach_store(b);
     }

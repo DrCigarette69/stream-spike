@@ -65,8 +65,22 @@ pub(crate) async fn handle_auth_ticket<W: AsyncWrite + Unpin>(
         let g = state.read().await;
         g.cfg.clone()
     };
+    if let Some(p) = &plane {
+        let allow = p.lock().unwrap().relay_allow.clone();
+        if let Err(r) = crate::pilot_target::check_ticket_relay(ticket_json, allow.as_ref()) {
+            if let Some(sid) = msg.get("stream_id").and_then(|v| v.as_str()) {
+                p.lock().unwrap().unreserve(sid);
+            }
+            state.write().await.auth_rejects += 1;
+            let _ = send_line(writer, &json!({"type":"AUTH_REJECT","error":r,"egress_refused":true})).await;
+            return;
+        }
+    }
     let ver = verify_ticket(http, &cfg, ticket_json, frame_alpn).await;
     if !ver.ok {
+        if let (Some(p), Some(sid)) = (&plane, msg.get("stream_id").and_then(|v| v.as_str())) {
+            p.lock().unwrap().unreserve(sid);
+        }
         {
             let mut g = state.write().await;
             g.auth_rejects += 1;

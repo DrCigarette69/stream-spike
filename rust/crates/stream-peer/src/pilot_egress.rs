@@ -77,6 +77,8 @@ pub struct EgressPlane {
     pub lane: Lane,
     pub resolver: DynResolver,
     pub last_state: Option<(bool, String)>,
+    /// `SPIKE_RELAY_ALLOW_URL` (ticket `relay_url` must equal it).
+    pub relay_allow: Option<stream_proto::guard::RelayAllow>,
     pub max_streams: usize,
     /// Admitted at AUTH_TICKET, not yet connected (count toward the stream cap).
     reserved: HashSet<String>,
@@ -117,6 +119,7 @@ impl EgressPlane {
             lane: Lane::build(),
             resolver: Arc::new(StdResolver),
             last_state: None,
+            relay_allow: None,
             max_streams: DEFAULT_MAX_STREAMS,
             reserved: HashSet::new(),
             store: None,

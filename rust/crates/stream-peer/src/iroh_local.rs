@@ -100,13 +100,27 @@ pub fn startup_check() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `SPIKE_TRANSPORT=iroh_pilot`: refuse cleanly (admin stays up) until A4.4.
+/// `SPIKE_TRANSPORT=iroh_pilot` in a build without the `iroh_pilot` feature:
+/// refuse cleanly (admin stays up).
+#[cfg_attr(feature = "iroh_pilot", allow(dead_code))]
 pub fn spawn_iroh_pilot_refusal(state: SharedState) {
     tokio::spawn(async move {
         eprintln!("A4 iroh_pilot refused: {PILOT_NOT_BUILT}");
         mark_offline(&state).await;
         set_error(&state, PILOT_NOT_BUILT).await;
     });
+}
+
+/// A4.4 part 2: relay-only pilot dial (feature `iroh_pilot`).
+#[cfg(feature = "iroh_pilot")]
+pub fn spawn_iroh_pilot(
+    state: SharedState,
+    slot: TransportSlot,
+    http: reqwest::Client,
+    handle: crate::state::RelayHandle,
+    allow: stream_proto::guard::RelayAllow,
+) {
+    tokio::spawn(crate::iroh_pilot_dial::run(state, slot, http, handle, allow));
 }
 
 pub fn spawn_iroh_local(

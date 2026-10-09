@@ -17,6 +17,11 @@ mod iroh_ticket;
 mod kill;
 mod offline;
 mod pilot_egress;
+mod pilot_target;
+#[cfg(test)]
+mod pilot_target_tests;
+#[cfg(feature = "iroh_pilot")]
+mod iroh_pilot_dial;
 #[cfg(test)]
 mod pilot_egress_tests;
 #[cfg(test)]
@@ -46,6 +51,16 @@ async fn main() {
 
     let cfg = Config::from_env();
     let addr: SocketAddr = match config::parse_admin_addr(&cfg.admin_listen) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("peer {e}");
+            std::process::exit(2);
+        }
+    };
+    // A4.4 part 2: an `iroh_pilot` build starts only as iroh_pilot with exactly
+    // one acceptable relay (`transport_not_pilot` / `relay_config` refuse start).
+    #[cfg(feature = "iroh_pilot")]
+    let relay_allow = match pilot_target::startup_checks(&cfg.transport, stream_proto::guard::Lane::build()) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("peer {e}");
@@ -83,7 +98,10 @@ async fn main() {
     }
     let transport_slot = kill::TransportSlot::default();
     if config::is_iroh_pilot(&cfg.transport) {
-        // A4: gates + P8/P9 copy only; the pilot dial is A4.4.
+        #[cfg(feature = "iroh_pilot")]
+        iroh_local::spawn_iroh_pilot(state.clone(), transport_slot.clone(), http.clone(), relay_handle.clone(), relay_allow);
+        // Without the feature: clean refusal, admin stays up.
+        #[cfg(not(feature = "iroh_pilot"))]
         iroh_local::spawn_iroh_pilot_refusal(state.clone());
     } else if config::is_iroh_local(&cfg.transport) {
         // A3.2: real iroh dial (part 2) or a clean refusal; admin stays up.

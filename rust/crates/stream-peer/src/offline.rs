@@ -27,6 +27,11 @@ pub fn enter(g: &mut PeerState, code: &str) -> Option<String> {
     if user_stopped(g) || g.p8_reason.as_deref() == Some(code) {
         return None;
     }
+    // A pilot egress stop already showing (kill switch off / stale / budget /
+    // mismatch) is not replaced by the generic `connection_lost` (no flapping).
+    if code == CONNECTION_LOST && g.p8_reason.as_deref().is_some_and(|r| r.starts_with("egress_")) {
+        return None;
+    }
     g.p8_reason = Some(code.to_string());
     Some(a4_copy::p8_user_facing(code))
 }
@@ -98,6 +103,15 @@ mod tests {
         assert!(enter(&mut g, CONNECTION_LOST).is_none(), "P9 not accepted -> user stop, no P8");
         g.set_p9_ack(true).unwrap();
         assert!(enter(&mut g, "relay_path_required").unwrap().contains("expected secure route"));
+    }
+
+    #[test]
+    fn connection_lost_does_not_replace_specific_reason() {
+        let mut g = st();
+        assert!(enter(&mut g, "egress_off").is_some());
+        assert!(enter(&mut g, CONNECTION_LOST).is_none());
+        assert_eq!(g.p8_reason.as_deref(), Some("egress_off"));
+        assert!(enter(&mut g, "endpoint_mismatch").is_some(), "specific reasons still replace");
     }
 
     #[test]
