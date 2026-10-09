@@ -17,15 +17,17 @@
 
 ### P2 consent gate (own step after P1)
 
-- `GET /peer/consent/p2` → P2 copy, same shape as p1/p4 (`screen`, `id`, `body_lines`, `required_copy`, `user_facing`, `ok`). Copy is verbatim `fixtures/screens.json` `p2_consent.required_copy`: `do not read page contents` · `Matching may pause` · `compromised device`; there is no fuller P2 text in the fixture yet (Designer owns it).
+- `GET /peer/consent/p2` → `{screen, id, title, body_lines, button, cta, required_copy, user_facing, ok}` from the `p2_consent` entry of `fixtures/screens.json` (Designer, 39edb49), vendored verbatim as `rust/crates/stream-peer/src/p2_consent.json` because the Docker build context is `rust/`. A unit test fails if the two differ, if any `required_copy` fragment is missing from `body_lines`, or if a forbidden string appears. To update the copy, edit the fixture and re-copy the entry.
 - `POST /peer/consent {"accepted": true}` → 200 + `p2_consent: true` only if the ISP ack is set; else 403 `{"error": "isp_ack_required_before_consent", "code": "p1_ack_required"}`. `{"accepted": false}` clears it, closes any active iroh_local transport (≤ 2 s) and marks the Peer offline in `iroh_local` mode. Non-bool → 400 `bad_request`.
 - Clearing the ISP ack (`POST /peer/ack {"isp_ack_version": ""}`) also clears P2. A preset `SPIKE_ISP_ACK_VERSION` no longer implies P2; use `SPIKE_P2_CONSENT=1` (ignored without an ack).
-- stderr when P2 is shown or accepted:
+- stderr when P2 is shown or accepted (title, body_lines one per line, button):
   ```
   UX P2
-  do not read page contents
-  Matching may pause
-  compromised device
+  Sharing preferences
+  We log your account, time, destination host and port, bytes, and location tier. We do not read page contents.
+  Matching may pause when the network is thin or under load in your area.
+  A compromised device can still see the destinations it connects to, so keep your OS updated.
+  I agree, start sharing
   UX_SCREEN p2_consent
   ```
 - P2 gates **only** `iroh_local` (`pre_dial` → `p2_consent_required`); fake_relay / iroh_loopback unchanged. Python Peer has no `/peer/consent`; `scripts/peer_alpha1_cli.py` tolerates its 404 only when `SPIKE_IMPL` is not `rust`.

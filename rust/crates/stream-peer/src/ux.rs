@@ -25,32 +25,56 @@ pub const P4_USER_FACING: &str = concat!(
     "[ Resume sharing ]"
 );
 
-/// P2 consent bundle -- verbatim `fixtures/screens.json` `p2_consent.required_copy`
-/// (no other copy exists in the fixture; Designer owns any fuller text).
-pub const P2_REQUIRED_COPY: &[&str] = &[
-    "do not read page contents",
-    "Matching may pause",
-    "compromised device",
-];
+/// P2 consent copy: verbatim copy of the `p2_consent` entry of
+/// `fixtures/screens.json`, vendored as `src/p2_consent.json` because the Docker
+/// build context is `rust/` only. The drift test below fails if they differ.
+const P2_JSON: &str = include_str!("p2_consent.json");
 
-pub const P2_USER_FACING: &str = concat!(
-    "do not read page contents\n",
-    "Matching may pause\n",
-    "compromised device"
-);
+struct P2Copy {
+    #[cfg_attr(not(test), allow(dead_code))]
+    raw: Value,
+    title: String,
+    body_lines: Vec<String>,
+    button: String,
+    required_copy: Vec<String>,
+    user_facing: String,
+}
+
+fn strs(v: &Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+static P2: std::sync::LazyLock<P2Copy> = std::sync::LazyLock::new(|| {
+    let raw: Value = serde_json::from_str(P2_JSON).expect("p2_consent.json");
+    let title = raw["title"].as_str().unwrap_or_default().to_string();
+    let body_lines = strs(&raw["body_lines"]);
+    let button = raw["cta"].as_str().unwrap_or_default().to_string();
+    let required_copy = strs(&raw["required_copy"]);
+    let mut lines = vec![title.clone()];
+    lines.extend(body_lines.iter().cloned());
+    lines.push(button.clone());
+    let user_facing = lines.join("\n");
+    P2Copy { raw, title, body_lines, button, required_copy, user_facing }
+});
 
 pub fn p2_ux() -> Value {
     json!({
         "screen": "P2",
         "id": "p2_consent",
-        "body_lines": P2_REQUIRED_COPY,
-        "required_copy": P2_REQUIRED_COPY,
-        "user_facing": P2_USER_FACING,
+        "title": P2.title,
+        "body_lines": P2.body_lines,
+        "button": P2.button,
+        "cta": P2.button,
+        "required_copy": P2.required_copy,
+        "user_facing": P2.user_facing,
     })
 }
 
+/// Title, body lines, button -- one per line (stderr block after `UX P2`).
 pub fn p2_user_facing() -> &'static str {
-    P2_USER_FACING
+    &P2.user_facing
 }
 
 pub fn p1_ux() -> Value {
@@ -140,29 +164,32 @@ mod tests {
     #[test]
     fn p2_copy_matches_fixture_and_is_clean() {
         let fx: Value = serde_json::from_str(include_str!("../../../../fixtures/screens.json")).unwrap();
-        let p2 = fx["consent"]
+        let entry = fx["consent"]
             .as_array()
             .unwrap()
             .iter()
             .find(|c| c["id"] == "p2_consent")
             .unwrap();
-        let want: Vec<&str> = p2["required_copy"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(want, P2_REQUIRED_COPY);
-        for line in &want {
-            assert!(p2_user_facing().contains(line), "{line}");
+        // vendored copy must equal the fixture entry exactly
+        assert_eq!(&P2.raw, entry, "src/p2_consent.json drifted from fixtures/screens.json");
+        let body = P2.body_lines.join("\n");
+        assert!(!P2.title.is_empty() && !P2.button.is_empty() && !P2.body_lines.is_empty());
+        for frag in strs(&entry["required_copy"]) {
+            assert!(body.contains(&frag), "required_copy {frag:?} not in body_lines");
         }
-        let blob = format!("{}{}", p2_ux(), p2_user_facing());
-        for bad in FORBIDDEN.iter().chain(["waive all liability", "ISP will always allow"].iter()) {
-            assert!(!blob.contains(bad), "P2 contains forbidden {bad}");
+        let ux = p2_ux();
+        assert_eq!(ux["title"], entry["title"]);
+        assert_eq!(ux["body_lines"], entry["body_lines"]);
+        assert_eq!(ux["button"], entry["cta"]);
+        assert_eq!(ux["required_copy"], entry["required_copy"]);
+        let blob = format!("{ux}{}", p2_user_facing());
+        let mut bad: Vec<String> = FORBIDDEN.iter().map(|s| s.to_string()).collect();
+        bad.extend(strs(&fx["forbidden_user_facing_substrings"]));
+        for b in bad {
+            assert!(!blob.contains(&b), "P2 contains forbidden {b}");
         }
-        for bad in fx["forbidden_user_facing_substrings"].as_array().unwrap() {
-            assert!(!blob.contains(bad.as_str().unwrap()));
-        }
+        let expect = format!("{}\n{}\n{}", P2.title, P2.body_lines.join("\n"), P2.button);
+        assert_eq!(p2_user_facing(), expect);
     }
 
     #[test]

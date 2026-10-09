@@ -1,0 +1,16 @@
+{
+  "id": "p2_consent",
+  "screen": "P2",
+  "title": "Sharing preferences",
+  "required_copy": [
+    "do not read page contents",
+    "Matching may pause",
+    "compromised device"
+  ],
+  "body_lines": [
+    "We log your account, time, destination host and port, bytes, and location tier. We do not read page contents.",
+    "Matching may pause when the network is thin or under load in your area.",
+    "A compromised device can still see the destinations it connects to, so keep your OS updated."
+  ],
+  "cta": "I agree, start sharing"
+}
