@@ -66,7 +66,7 @@ def run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
 
 
-def outer() -> int:
+def outer(script: str | None = None) -> int:
     cargo = shutil.which("cargo") or fail("cargo not found")
     run([cargo, "build", "--locked", "-q", "-p", "stream-gateway"], cwd=RUST)
     run(
@@ -84,7 +84,7 @@ def outer() -> int:
         p = subprocess.run(
             ["sudo", "ip", "netns", "exec", ns, "sudo", "-u", user, "env",
              f"PATH={os.environ.get('PATH', '')}", f"HOME={os.environ.get('HOME', '')}",
-             sys.executable, "-u", str(Path(__file__).resolve()), "--inner"],
+             sys.executable, "-u", str(Path(script or __file__).resolve()), "--inner"],
         )
         return p.returncode
     finally:
@@ -198,6 +198,18 @@ def ticket(peer_endpoint_id: str, stream_id: str) -> str:
     })
 
 
+def mint_session(control: str, account: str = "acct_demo") -> dict:
+    """Control flow: /v1/match -> /v1/sessions. Returns the session JSON (incl. ticket_json)."""
+    st, m = http("POST", control + "/v1/match", {"account_id": account, "geo": {"country": "US", "city": "new_orleans"},
+                                                  "rematch_mode": "city"})
+    if st != 200:
+        fail(f"/v1/match {st} {m}")
+    st, sess = http("POST", control + "/v1/sessions", {"quote_id": m["quote_id"]})
+    if st != 200:
+        fail(f"/v1/sessions {st} {sess}")
+    return sess
+
+
 def client(*extra):
     return [str(CLIENT), "--gateway-id", DEV_ID, "--direct-addr", GW_ADDR, *extra]
 
@@ -222,7 +234,8 @@ def inner() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="a31_"))
     cenv = base_env()
     cenv.update({"SPIKE_DB": str(tmp / "control.sqlite"), "SPIKE_LISTEN": "127.0.0.1:8080",
-                 "SPIKE_TICKET_SECRET": SECRET, "FIXTURES": str(ROOT / "fixtures")})
+                 "SPIKE_TICKET_SECRET": SECRET, "FIXTURES": str(ROOT / "fixtures"),
+                 "SPIKE_TRANSPORT": "iroh_local", "SPIKE_IROH_GATEWAY_ADDR": GW_ADDR})
     procs.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "control" / "main.py")], cwd=str(ROOT / "control"),
                                   env=cenv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     wait_http(CONTROL + "/health")
@@ -260,18 +273,25 @@ def inner() -> int:
     if not mine or mine[0].get("endpoint_id") != cid:
         fail(f"/gw/peers: {peers}")
     ok(f"peer enrolled with authenticated endpoint_id={cid}")
-    st, r = http("POST", GW_HTTP + "/gw/start", {"peer_id": "peer_a31", "stream_id": "str_a31_good",
-                                                  "ticket_json": ticket(cid, "str_a31_good"),
+    # Good ticket minted by Control (A3.3 binds the enrolled = authenticated endpoint id)
+    sess = mint_session(CONTROL)
+    pl = sess["ticket"]["payload"]
+    if pl.get("peer_endpoint_id") != cid:
+        fail(f"Control minted peer_endpoint_id={pl.get('peer_endpoint_id')} != client {cid}")
+    good_sid = sess["stream_id"]
+    st, r = http("POST", GW_HTTP + "/gw/start", {"peer_id": sess["peer_id"], "stream_id": good_sid,
+                                                  "ticket_json": sess["ticket_json"],
                                                   "dest_host": "echo.local", "dest_port": 443})
     c.expect('"AUTH_TICKET"')
     c.expect('"OPEN"')
     if st != 200 or not r.get("started"):
         fail(f"good ticket /gw/start {st} {r}")
-    ok(f"good ticket: /gw/start {st} started=True (client sent AUTH_OK, got OPEN)")
-    http("POST", GW_HTTP + "/gw/stop", {"stream_id": "str_a31_good", "peer_id": "peer_a31"})
+    ok(f"good Control-minted ticket: /gw/start {st} started=True (client sent AUTH_OK, got OPEN)")
+    http("POST", GW_HTTP + "/gw/stop", {"stream_id": good_sid, "peer_id": "peer_a31"})
     c.expect('"CLOSE"')
 
-    # Mismatched ticket id (valid EndpointId, not the client's)
+    # Mismatched ticket id (valid EndpointId, not the client's; self-signed with the dev secret to
+    # isolate the Gateway check -- the Control-minted replay case is in a33_ticket_bind_smoke.py)
     st, r = http("POST", GW_HTTP + "/gw/start", {"peer_id": "peer_a31", "stream_id": "str_a31_bad",
                                                   "ticket_json": ticket(DEV_ID, "str_a31_bad"),
                                                   "dest_host": "echo.local", "dest_port": 443})

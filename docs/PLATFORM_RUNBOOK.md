@@ -226,3 +226,38 @@ python3 scripts/a31_gateway_endpoint_smoke.py   # → A3.1_GATEWAY_ENDPOINT_GREE
 ```
 
 The smoke makes a throwaway netns with only `lo` (plus `10.73.0.1/24` on lo) and no default route. Inside it, it runs Control, the Gateway and `examples/a31_test_client` (random key; refuses a public `--direct-addr` / any `--relay-url` before dialing). It checks the gateway refusals, `/health`, the good ticket → AUTH_OK/OPEN, the mismatched ticket → AUTH_REJECT `endpoint_mismatch` + close, and the HELLO mismatch. Then it deletes the netns.
+
+## A3.3 Control ticket binding (`SPIKE_TRANSPORT=iroh_local`, TOM-16)
+
+Control source of truth: `control/main_expanded.py`. After editing it, run `python3 control/build_parts.py` to rewrite both `_zlib_*.txt` (preferred by `main.py`) and the `_src_part_*.b85` fallback. `--check` verifies both decode to the same bytes as `main_expanded.py`. The loader format is unchanged. The old b85 fallback was undecodable ("base85 overflow"); it has been regenerated.
+
+With `SPIKE_TRANSPORT=iroh_local` in Control's env, `POST /v1/sessions` mints:
+
+| Ticket field | Source | Refusal (HTTP 422, `{"error":R,"code":"ticket_bind_refused","reason":R,"detail":…}`) |
+|---|---|---|
+| `peer_endpoint_id` | the Peer's enrolled `endpoint_id`. The iroh Gateway enrolls the QUIC-authenticated id, so this is the real key. | not 64 lowercase hex (iroh `Display`) → `endpoint_bind_required` |
+| `gateway_endpoint_id` | `SPIKE_GATEWAY_ENDPOINT_ID`, default dev `162e075f…d7a1`. The request body can't override it in this mode. | malformed env → `gateway_endpoint_invalid` |
+| `direct_addrs` | `SPIKE_IROH_GATEWAY_ADDR` (comma list). Unset → `127.0.0.1:9102`; set to empty → `[]`. | empty → `direct_addrs_required`; any entry failing `scripts/spike_private_guard.check_direct_addrs` → guard reason unchanged (`public_addr`, `allowlist_miss`, `bad_addr`, `allowlist_config`) |
+
+- **Allowlist:** `SPIKE_IROH_ALLOW_CIDRS` follows the A3.0 rules. Unset → `10.73.0.0/24,127.0.0.0/8`; empty → any private range.
+- **Verify:** in this mode `/v1/tickets/verify` also re-checks `peer_endpoint_id` form and the guarded `direct_addrs`. The Gateway then checks the authenticated remote id against `peer_endpoint_id` (`endpoint_mismatch`, see A3.1).
+- **Signing is unchanged:** HMAC-SHA256 over the sorted, compact JSON of `payload`, so the Rust Gateway → Control verify path works as-is.
+- **Other transports are unchanged:** no `direct_addrs`, and `gateway_endpoint_id` still defaults to `iroh_ep_gateway_spike`.
+- **Docker image:** `control/Dockerfile` copies only `control/`, so `spike_private_guard` isn't in the image. In `iroh_local` mode Control then fails closed with `guard_unavailable`. A3 runs Control on the host netns path, not compose.
+
+Proof (sudo; reuses the A3.1 netns harness, all tickets minted by Control):
+
+```bash
+python3 scripts/a33_ticket_bind_smoke.py   # → A3.3_TICKET_BIND_GREEN
+```
+
+It checks:
+- missing or malformed id → `endpoint_bind_required`
+- empty addrs → `direct_addrs_required`
+- `8.8.8.8` → `public_addr`
+- `192.168.1.5` → `allowlist_miss`, but accepted with `SPIKE_IROH_ALLOW_CIDRS=''`
+- non-iroh minting unchanged
+- good bind end-to-end through the Rust Gateway (AUTH_TICKET → AUTH_OK → OPEN)
+- a ticket minted for key A, presented after key B took over the same `peer_id` → `endpoint_mismatch` at the Gateway, plus close
+
+`a31_gateway_endpoint_smoke.py` now also uses a Control-minted ticket for its good case.
