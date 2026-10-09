@@ -14,6 +14,8 @@ pub struct StreamInfo {
     pub dest_host: String,
     pub dest_port: u16,
     pub opened: bool,
+    /// A4.4 pilot: resolved + checked address for this stream (connect target).
+    pub pinned: Option<std::net::SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -39,6 +41,8 @@ pub struct PeerState {
     pub p9_ack: bool,
     /// A4: current P8 system-offline reason code (machine-only, never shown).
     pub p8_reason: Option<String>,
+    /// A4.4: pilot egress plane (iroh_pilot only; None = Alpha-3 floor only).
+    pub egress: Option<crate::pilot_egress::SharedPlane>,
 }
 
 impl PeerState {
@@ -61,6 +65,7 @@ impl PeerState {
             p2_consent: false,
             p9_ack: false,
             p8_reason: None,
+            egress: None,
         };
         if ack.is_empty() {
             let _ = st.set_ux(Some("P1"), ux::p1_user_facing());
@@ -157,6 +162,9 @@ impl PeerState {
             "p1": p1_ux(),
             "p4": p4_ux(),
         });
+        if let Some(p) = &self.egress {
+            snap["egress"] = crate::egress_state::snapshot(p);
+        }
         if self.isp_ack_version.is_empty() {
             snap["ux_prompt"] = json!(ux::p1_user_facing());
         }

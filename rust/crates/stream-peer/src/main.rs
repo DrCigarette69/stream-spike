@@ -6,6 +6,7 @@ mod config;
 mod consent_a4;
 mod consent;
 mod egress;
+mod egress_state;
 mod frames;
 #[cfg(feature = "iroh_local")]
 mod iroh_dial;
@@ -14,6 +15,9 @@ mod iroh_local;
 mod iroh_ticket;
 mod kill;
 mod offline;
+mod pilot_egress;
+#[cfg(test)]
+mod pilot_egress_tests;
 mod relay;
 mod session;
 mod state;
@@ -45,6 +49,14 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // A4.4: pilot egress config refuses start before anything binds or dials.
+    let plane = match egress_state::build_plane(&cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("peer {e}");
+            std::process::exit(2);
+        }
+    };
     if cfg.isp_ack_version.is_empty() {
         eprintln!("UX P1\n{}", ux::p1_user_facing());
     }
@@ -56,6 +68,16 @@ async fn main() {
         .build()
         .expect("http client");
 
+    if let Some(p) = plane {
+        let (ver, n) = {
+            let g = p.lock().unwrap();
+            (g.version.clone(), g.allow.entries().len())
+        };
+        eprintln!("peer egress_allowlist_version={ver} entries={n} public_egress_env={}", cfg.public_egress);
+        state.write().await.egress = Some(p.clone());
+        egress_state::spawn_poller(p.clone(), http.clone(), egress_state::state_url(&cfg));
+        egress_state::spawn_watchdog(state.clone(), p);
+    }
     let transport_slot = kill::TransportSlot::default();
     if config::is_iroh_pilot(&cfg.transport) {
         // A4: gates + P8/P9 copy only; the pilot dial is A4.4.

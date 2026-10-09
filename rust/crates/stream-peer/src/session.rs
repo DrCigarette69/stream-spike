@@ -136,6 +136,9 @@ where
         if close_rx.try_recv().is_ok() {
             break;
         }
+        if flush_pilot_closes(state, &mut writer).await.is_err() {
+            break;
+        }
 
         if last_hb.elapsed() >= hb {
             let (pid, tier, ack, ep) = {
@@ -197,6 +200,27 @@ where
     }
     drop(writer);
     end
+}
+
+/// A4.4: send Peer-side CLOSE frames queued by the pilot egress plane
+/// (kill switch / budget / mismatch / refused pinned connect).
+pub(crate) async fn flush_pilot_closes<W: AsyncWrite + Unpin>(
+    state: &SharedState,
+    writer: &mut W,
+) -> Result<(), std::io::Error> {
+    let Some(p) = state.read().await.egress.clone() else { return Ok(()) };
+    let pending = p.lock().unwrap().take_pending_close();
+    for (sid, reason) in pending {
+        {
+            let mut g = state.write().await;
+            if let Some(st) = g.streams.get_mut(&sid) {
+                st.closed = true;
+                st.closed_by = Some(reason.clone());
+            }
+        }
+        send_line(writer, &json!({"type": "CLOSE", "stream_id": sid, "reason": reason})).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

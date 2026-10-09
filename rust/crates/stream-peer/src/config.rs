@@ -69,10 +69,8 @@ impl Config {
                 std::env::var("SPIKE_P2_CONSENT").unwrap_or_default().trim(),
                 "1" | "true" | "yes"
             ),
-            public_egress: matches!(
-                std::env::var("SPIKE_PUBLIC_EGRESS").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            ),
+            // Guard rule: exactly `1` is on (same as the EgressSwitch env bit).
+            public_egress: stream_proto::guard::public_egress_env(),
             p9_ack_preset: matches!(
                 std::env::var("SPIKE_P9_ACK").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"

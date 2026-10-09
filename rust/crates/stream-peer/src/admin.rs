@@ -32,6 +32,7 @@ pub fn router(app: AppState) -> Router {
         .route("/peer/consent", post(crate::consent::peer_consent))
         .route("/peer/consent/p8", get(crate::consent_a4::consent_p8))
         .route("/peer/screen/p8", get(crate::consent_a4::consent_p8))
+        .route("/peer/egress", get(crate::consent_a4::peer_egress))
         .route(
             "/peer/consent/p9",
             get(crate::consent_a4::consent_p9).post(crate::consent_a4::peer_consent_p9),

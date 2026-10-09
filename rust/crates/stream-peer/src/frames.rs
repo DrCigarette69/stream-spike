@@ -42,6 +42,20 @@ pub(crate) async fn handle_auth_ticket<W: AsyncWrite + Unpin>(
         .await;
         return;
     }
+    // A4.4: iroh_pilot plane -- switch, version, budget, floor, allowlist,
+    // resolve-and-pin. Per-OPEN refusals reject this stream only (no P8).
+    let plane = state.read().await.egress.clone();
+    let mut pinned = None;
+    if let Some(p) = &plane {
+        match crate::pilot_egress::check_and_pin(p, &dest_host, dest_port).await {
+            Ok(a) => pinned = Some(a),
+            Err(r) => {
+                state.write().await.auth_rejects += 1;
+                let _ = send_line(writer, &json!({"type":"AUTH_REJECT","error":r.reason,"egress_refused":true})).await;
+                return;
+            }
+        }
+    }
     let ticket_json = msg
         .get("ticket_json")
         .and_then(|v| v.as_str())
@@ -79,6 +93,7 @@ pub(crate) async fn handle_auth_ticket<W: AsyncWrite + Unpin>(
                 dest_host,
                 dest_port,
                 opened: false,
+                pinned,
             },
         );
     }
@@ -123,9 +138,22 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
         "OPEN" => {
             if let Some(sid) = msg.get("stream_id").and_then(|v| v.as_str()) {
                 let mut g = state.write().await;
+                let plane = g.egress.clone();
                 if let Some(st) = g.streams.get_mut(sid) {
                     st.opened = true;
+                    if let (Some(p), Some(addr)) = (plane, st.pinned) {
+                        crate::pilot_egress::spawn_open(p, sid.to_string(), st.dest_host.clone(), st.dest_port, addr);
+                    }
+                } else if let Some(p) = plane {
+                    // OPEN without a checked AUTH_TICKET never dials in pilot mode.
+                    p.lock().unwrap().queue_close(sid, "egress_not_allowlisted");
                 }
+            }
+        }
+        "EGRESS_STATE" => {
+            let plane = state.read().await.egress.clone();
+            if let Some(p) = plane {
+                crate::egress_state::apply_state(&p, msg);
             }
         }
         "BYTES" => {
@@ -135,6 +163,13 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
                 .unwrap_or("")
                 .to_string();
             let n = msg.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
+            let plane = state.read().await.egress.clone();
+            if let Some(p) = plane {
+                let mut p = p.lock().unwrap();
+                if p.add_bytes(n).is_err() {
+                    p.close_all(stream_proto::guard::REASON_EGRESS_BUDGET_EXCEEDED);
+                }
+            }
             let mut g = state.write().await;
             if let Some(st) = g.streams.get_mut(&sid) {
                 if !st.closed {
@@ -162,6 +197,9 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
                 });
                 st.closed = true;
                 st.closed_by = Some("gateway".into());
+                if let Some(p) = g.egress.clone() {
+                    p.lock().unwrap().close_one(&sid, "gateway");
+                }
             }
             eprintln!("peer teardown stream {sid} (gateway CLOSE)");
         }

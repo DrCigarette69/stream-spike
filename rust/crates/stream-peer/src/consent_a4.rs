@@ -79,6 +79,18 @@ pub async fn peer_consent_p9(State(app): State<AppState>, Json(body): Json<Value
     (StatusCode::OK, Json(json!({ "ok": true, "p9_ack": accepted })))
 }
 
+/// `GET /peer/egress`: A4.4 pilot egress state (404 outside iroh_pilot).
+pub async fn peer_egress(State(app): State<AppState>) -> impl IntoResponse {
+    let p = app.state.read().await.egress.clone();
+    match p {
+        Some(p) => (StatusCode::OK, Json(crate::egress_state::snapshot(&p))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "pilot_egress_not_active", "code": "transport_not_pilot" })),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::Config;

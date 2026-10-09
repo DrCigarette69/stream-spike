@@ -46,6 +46,53 @@ Applies only when `SPIKE_TRANSPORT=iroh_pilot` **and** `SPIKE_PUBLIC_EGRESS=1`
 - `SPIKE_TRANSPORT=iroh_pilot` currently refuses at startup with `last_error=iroh_pilot_not_built`
   (admin /health and consent endpoints stay up) until A4.4 lands the dial.
 
+## A4.4 part 1: Peer egress allowlist (iroh_pilot)
+
+All checks come from Architect's A4.1 `stream_proto::guard` (pilot.rs); the Peer
+(`pilot_egress.rs`, `egress_state.rs`) only keeps state and does the I/O. Other
+transports: no plane, Alpha-3 floor (#6) unchanged.
+
+Env (iroh_pilot only; parse errors refuse start, exit 2, before anything binds):
+- `SPIKE_EGRESS_ALLOWLIST` exact `host:port` (port 443 only), required.
+  stderr `peer a4_refuse_egress_allowlist_config:<detail>`.
+- `SPIKE_PUBLIC_EGRESS=1` (exactly `1`, guard rule; also drives P9).
+- `SPIKE_EGRESS_STATE_URL` (default `$CONTROL_URL/v1/egress/state`), polled every 1 s;
+  shape `{"public_egress": bool, "allowlist_version": "<sha256>", "ts": ..}`. The
+  Gateway's `EGRESS_STATE` frame (same shape) is applied too. Unreachable / non-200 /
+  malformed = no refresh -> stale after `SPIKE_EGRESS_STATE_MAX_AGE_MS` (default 5000,
+  clamp 100..5000) = off.
+- `SPIKE_EGRESS_BYTE_CAP` bytes / Peer / UTC day (default 50 000 000), both directions.
+- `allowlist_version` = guard `EgressAllow::version()` (sha256 hex of sorted, deduped
+  `host:port\n` lines). Printed at start (`peer egress_allowlist_version=<hex> entries=N
+  public_egress_env=<bool>`), on `/health` `.egress` and `GET /peer/egress` (404
+  `transport_not_pilot` outside iroh_pilot). Not added to HELLO (doc doesn't ask).
+
+Per AUTH_TICKET (dest known), before AUTH_OK: kill switch + version (`check_open`) ->
+budget -> floor -> `resolve_and_pin` (blocking resolver on spawn_blocking) -> pinned
+`SocketAddr` stored on the stream. OPEN connects to that exact address only
+(`peer egress_open <sid> <host:port> pinned=<ip:port>`). Refusal -> `AUTH_REJECT
+{error:<reason>, egress_refused:true}` + `a4_refuse_<reason>:<detail>`; these reject that
+OPEN only, never P8.
+
+Watchdog (100 ms): off / stale / version mismatch / budget -> close every pilot egress
+connection (`peer egress_close <sid> <host:port> reason=<reason>`), queue Peer `CLOSE
+{stream_id, reason}` frames, show P8: `egress_off` (detail `flag_stale` ->
+`egress_state_stale` line), `egress_allowlist_mismatch`, `egress_budget_exceeded`.
+Back on -> P8 cleared (`peer egress_on`). User stops (P4 kill, P1 cleared, P2/P9
+withdrawn) close pilot egress too, without P8. Startup/config failures exit before
+any P8 (`connection_lost` fallback if ever shown).
+
+Tests: `pilot_egress_tests.rs` (injected resolver; loopback sockets only) and
+`scripts/a44_peer_egress_smoke.py` -> `A4.4_PEER_EGRESS_PART1_GREEN` (TEST-NET-2
+stand-in 198.51.100.10:443 on `lo` of a no-default-route netns; a4_local lane injected
+in the test since the cargo feature isn't forwarded by stream-peer yet).
+
+Part 1 limits / part 2: frames carry byte counts, not data, so OPEN holds the pinned
+connection and counts upstream bytes into a local sink; part 2 pipes it through the
+Gateway data path (`pump`). Part 2 also needs Platform's `iroh_pilot` (`pilot`) feature +
+lock, A4.2 relay (RelayOnly dial via `check_relay_url_with`), `check_transport_pilot`
+in the pilot build, and stream-peer forwarding `a4_local` so the binary-level a4 lane
+can use the TEST-NET-2 exception and test resolver.
+
 ## Open / asks
-- ALPHA4_PILOT.md reason `egress_disabled` has no `reason_lines` key (fixture uses
-  `egress_off`); today it maps to the `connection_lost` fallback. Designer/Architect to align.
+- Kill-switch reason is `egress_off` everywhere (guard, fixture `reason_lines`, Peer).
