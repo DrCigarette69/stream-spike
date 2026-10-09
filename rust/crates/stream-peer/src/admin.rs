@@ -28,6 +28,8 @@ pub fn router(app: AppState) -> Router {
         .route("/peer/status", get(health_or_status))
         .route("/peer/consent/p1", get(consent_p1))
         .route("/peer/consent/p4", get(consent_p4))
+        .route("/peer/consent/p2", get(crate::consent::consent_p2))
+        .route("/peer/consent", post(crate::consent::peer_consent))
         .route("/peer/ack", post(peer_ack))
         .route("/peer/kill", post(peer_kill))
         .route("/peer/resume", post(peer_resume))
@@ -105,11 +107,11 @@ async fn do_set_ack(app: &AppState, version: &str, understood: Option<bool>) -> 
     }
     {
         let mut g = app.state.write().await;
-        g.isp_ack_version = version.to_string();
-        g.p2_consent = !version.is_empty();
+        g.set_isp_ack(version);
     }
     if version.is_empty() {
         relay::disconnect_now(&app.state, &app.relay).await;
+        let _ = app.transport.kill("isp_ack_cleared").await;
         let mut g = app.state.write().await;
         let _ = g.set_ux(Some("P1"), ux::p1_user_facing());
         eprintln!("UX P1\n{}", ux::p1_user_facing());

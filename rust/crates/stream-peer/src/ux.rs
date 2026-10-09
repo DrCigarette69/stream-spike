@@ -25,6 +25,34 @@ pub const P4_USER_FACING: &str = concat!(
     "[ Resume sharing ]"
 );
 
+/// P2 consent bundle -- verbatim `fixtures/screens.json` `p2_consent.required_copy`
+/// (no other copy exists in the fixture; Designer owns any fuller text).
+pub const P2_REQUIRED_COPY: &[&str] = &[
+    "do not read page contents",
+    "Matching may pause",
+    "compromised device",
+];
+
+pub const P2_USER_FACING: &str = concat!(
+    "do not read page contents\n",
+    "Matching may pause\n",
+    "compromised device"
+);
+
+pub fn p2_ux() -> Value {
+    json!({
+        "screen": "P2",
+        "id": "p2_consent",
+        "body_lines": P2_REQUIRED_COPY,
+        "required_copy": P2_REQUIRED_COPY,
+        "user_facing": P2_USER_FACING,
+    })
+}
+
+pub fn p2_user_facing() -> &'static str {
+    P2_USER_FACING
+}
+
 pub fn p1_ux() -> Value {
     json!({
         "screen": "P1",
@@ -107,6 +135,34 @@ mod tests {
         }
         assert_no_forbidden(p1_user_facing()).unwrap();
         assert_no_forbidden(p4_user_facing()).unwrap();
+    }
+
+    #[test]
+    fn p2_copy_matches_fixture_and_is_clean() {
+        let fx: Value = serde_json::from_str(include_str!("../../../../fixtures/screens.json")).unwrap();
+        let p2 = fx["consent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "p2_consent")
+            .unwrap();
+        let want: Vec<&str> = p2["required_copy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(want, P2_REQUIRED_COPY);
+        for line in &want {
+            assert!(p2_user_facing().contains(line), "{line}");
+        }
+        let blob = format!("{}{}", p2_ux(), p2_user_facing());
+        for bad in FORBIDDEN.iter().chain(["waive all liability", "ISP will always allow"].iter()) {
+            assert!(!blob.contains(bad), "P2 contains forbidden {bad}");
+        }
+        for bad in fx["forbidden_user_facing_substrings"].as_array().unwrap() {
+            assert!(!blob.contains(bad.as_str().unwrap()));
+        }
     }
 
     #[test]

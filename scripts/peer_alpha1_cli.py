@@ -305,6 +305,17 @@ def main() -> int:
     assert status.get("sharing_status") in ("Sharing", "Sharing ON"), status
     assert_no_forbidden(status, label="Sharing ON status")
 
+    # --- P2 consent accept (A3.2; Rust only — Python peer has no /peer/consent) ---
+    step("P2 consent accept")
+    impl = os.environ.get("SPIKE_IMPL", "python").strip().lower()
+    st, p2c = http("POST", PEER + "/peer/consent", {"accepted": True})
+    if st == 404 and impl != "rust":
+        print("  (python peer: /peer/consent not implemented — skipped)", flush=True)
+    else:
+        assert st == 200 and p2c.get("p2_consent") is True, (st, p2c)
+        assert_no_forbidden(p2c, label="P2 consent")
+        print("  POST /peer/consent accepted:true → p2_consent=True", flush=True)
+
     # --- P4 kill ---
     step("P4 kill (Pause sharing)")
     print("  CTA: Pause sharing", flush=True)

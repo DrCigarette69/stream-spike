@@ -2,6 +2,7 @@
 //! Stubs only: fake Relay / iroh loopback; no public egress.
 mod admin;
 mod config;
+mod consent;
 mod egress;
 mod frames;
 mod iroh_key;

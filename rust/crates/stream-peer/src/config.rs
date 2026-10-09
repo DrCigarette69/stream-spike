@@ -18,6 +18,8 @@ pub struct Config {
     pub iroh_key_path: String,
     /// A3.2: `SPIKE_GATEWAY_ENDPOINT_ID` -- ticket `gateway_endpoint_id` must match.
     pub gateway_endpoint_id: String,
+    /// A3.2: `SPIKE_P2_CONSENT=1` headless preset (only effective with an ISP ack).
+    pub p2_consent_preset: bool,
 }
 
 impl Config {
@@ -59,6 +61,10 @@ impl Config {
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
+            p2_consent_preset: matches!(
+                std::env::var("SPIKE_P2_CONSENT").unwrap_or_default().trim(),
+                "1" | "true" | "yes"
+            ),
         }
     }
 }

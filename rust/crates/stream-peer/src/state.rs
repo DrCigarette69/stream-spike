@@ -32,8 +32,8 @@ pub struct PeerState {
     pub ux_screen: Option<String>,
     /// When set, relay loop should drop the current socket (kill / clear-ack).
     pub force_disconnect: bool,
-    /// A3.2: P2 consent bundle accepted (set with an accepted ISP ack; enroll
-    /// accepts P1+P2 together). iroh_local refuses to dial without it.
+    /// A3.2: P2 consent accepted -- its own gate after P1 (`POST /peer/consent`
+    /// or `SPIKE_P2_CONSENT=1` + ack). Only gates iroh_local dials.
     pub p2_consent: bool,
 }
 
@@ -54,12 +54,31 @@ impl PeerState {
             ux_status: String::new(),
             ux_screen: None,
             force_disconnect: false,
-            p2_consent: !ack.is_empty(),
+            p2_consent: false,
         };
         if ack.is_empty() {
             let _ = st.set_ux(Some("P1"), ux::p1_user_facing());
+        } else if st.cfg.p2_consent_preset {
+            st.p2_consent = true;
         }
         st
+    }
+
+    /// Set / clear the ISP ack. Clearing P1 always clears P2.
+    pub fn set_isp_ack(&mut self, version: &str) {
+        self.isp_ack_version = version.to_string();
+        if version.is_empty() {
+            self.p2_consent = false;
+        }
+    }
+
+    /// P2 accept / withdraw. Accept requires P1 first.
+    pub fn set_p2_consent(&mut self, accepted: bool) -> Result<(), &'static str> {
+        if accepted && self.isp_ack_version.is_empty() {
+            return Err("p1_ack_required");
+        }
+        self.p2_consent = accepted;
+        Ok(())
     }
 
     pub fn set_ux(&mut self, screen: Option<&str>, text: &str) -> Result<(), String> {
