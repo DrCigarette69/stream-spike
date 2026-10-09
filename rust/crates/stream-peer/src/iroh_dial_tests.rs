@@ -137,6 +137,7 @@ async fn dial_session_then_kill_closes_within_2s() {
     sleep(Duration::from_millis(600)).await;
     assert!(!state.read().await.connected);
     assert_eq!(gw.accepts.load(Ordering::SeqCst), 1, "killed peer must not redial");
+    assert!(state.read().await.p8_reason.is_none(), "user kill is P4, never P8");
     task.abort();
     ep.close().await;
     gw.ep.close().await;
@@ -156,6 +157,7 @@ async fn endpoint_mismatch_closes_and_does_not_retry() {
     .expect("dial_loop returned");
     assert_eq!(r.as_deref(), Some("endpoint_mismatch"));
     assert_eq!(state.read().await.last_error, "endpoint_mismatch");
+    assert_eq!(state.read().await.p8_reason.as_deref(), Some("endpoint_mismatch"), "P8 entered");
     assert!(!slot.is_active().await);
     sleep(Duration::from_millis(1500)).await;
     assert_eq!(gw.accepts.load(Ordering::SeqCst), 1, "no retry after endpoint_mismatch");

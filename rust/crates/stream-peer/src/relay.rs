@@ -1,6 +1,7 @@
 //! Fake-relay / iroh-loopback dial -- newline JSON HELLO / AUTH_TICKET / OPEN / BYTES / CLOSE.
 use crate::config;
 use crate::frames::{mark_offline, set_error};
+use crate::offline;
 use crate::session::{self, SessionEnd};
 use crate::state::{RelayHandle, SharedState};
 use tokio::net::TcpStream;
@@ -59,6 +60,7 @@ async fn relay_loop(state: SharedState, handle: RelayHandle, http: reqwest::Clie
             Err(e) => {
                 set_error(&state, &e.to_string()).await;
                 mark_offline(&state).await;
+                offline::system_offline(&state, offline::CONNECTION_LOST).await;
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -66,12 +68,14 @@ async fn relay_loop(state: SharedState, handle: RelayHandle, http: reqwest::Clie
         let (reader, writer) = stream.into_split();
         match session::run(&state, &handle, &http, reader, writer).await {
             SessionEnd::Handshake => {
+                offline::system_offline(&state, offline::CONNECTION_LOST).await;
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
             SessionEnd::Ended | SessionEnd::Rejected(_) => {}
         }
         mark_offline(&state).await;
+        offline::system_offline(&state, offline::CONNECTION_LOST).await;
         eprintln!("peer offline {peer_id}");
         sleep(Duration::from_millis(200)).await;
     }

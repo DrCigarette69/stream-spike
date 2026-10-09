@@ -1,0 +1,20 @@
+{
+  "id": "p9_allowlist",
+  "screen": "P9",
+  "alpha": "A4",
+  "title": "Pilot: limited sharing",
+  "required_copy": [
+    "short list of test sites",
+    "blocked on this device"
+  ],
+  "body_lines": [
+    "During this pilot, your connection is only used to reach a short list of test sites.",
+    "Requests to anything else are blocked on this device before they leave.",
+    "You can pause sharing at any time."
+  ],
+  "rules": [
+    "Show after P2 and before the first dial, only when public egress is switched on",
+    "Do not list or name the test sites in copy",
+    "Not shown when egress is off (default Alpha-3 behavior)"
+  ]
+}

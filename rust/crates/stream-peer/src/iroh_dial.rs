@@ -10,7 +10,8 @@
 //! Gateway `AUTH_REJECT` (e.g. `endpoint_mismatch`) -> log, close, no retry.
 use crate::frames::{mark_offline, set_error};
 use crate::iroh_key;
-use crate::iroh_local::pre_dial;
+use crate::iroh_local::pre_dial_a4;
+use crate::offline::{self, CONNECTION_LOST};
 use crate::iroh_ticket::{check_dial_target, DialTarget, GATEWAY_MISMATCH};
 use crate::kill::{ActiveTransport, CloseFut, TransportSlot};
 use crate::session::{self, SessionEnd};
@@ -159,22 +160,24 @@ pub async fn dial_loop(
     target: &DialTarget,
 ) -> Option<String> {
     loop {
-        let (ack, p2, killed, peer_id) = {
+        let (ack, p2, egress, p9, killed, peer_id) = {
             let g = state.read().await;
-            (g.isp_ack_version.clone(), g.p2_consent, g.kill_requested, g.cfg.peer_id.clone())
+            let c = &g.cfg;
+            (g.isp_ack_version.clone(), g.p2_consent, c.p9_required(), g.p9_ack, g.kill_requested, c.peer_id.clone())
         };
-        if crate::iroh_local::dial_gate(&ack, p2, killed).is_err() {
+        if crate::iroh_local::dial_gate_a4(&ack, p2, egress, p9, killed).is_err() {
             mark_offline(state).await;
             sleep(Duration::from_millis(300)).await;
             continue;
         }
-        let _ = pre_dial(&ack, p2, killed);
+        let _ = pre_dial_a4(&ack, p2, egress, p9, killed);
         let conn = match connect(ep, target).await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("peer iroh_local dial failed: {e}");
                 set_error(state, &e).await;
                 mark_offline(state).await;
+                offline::system_offline(state, CONNECTION_LOST).await;
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -199,10 +202,15 @@ pub async fn dial_loop(
             SessionEnd::Rejected(why) => {
                 eprintln!("peer iroh_local AUTH_REJECT {why}: closed, not retrying");
                 set_error(state, &why).await;
+                offline::system_offline(state, &why).await;
                 return Some(why);
             }
-            SessionEnd::Handshake => sleep(Duration::from_secs(1)).await,
+            SessionEnd::Handshake => {
+                offline::system_offline(state, CONNECTION_LOST).await;
+                sleep(Duration::from_secs(1)).await
+            }
             SessionEnd::Ended => {
+                offline::system_offline(state, CONNECTION_LOST).await;
                 eprintln!("peer offline {peer_id}");
                 sleep(Duration::from_millis(200)).await;
             }

@@ -30,6 +30,12 @@ pub fn router(app: AppState) -> Router {
         .route("/peer/consent/p4", get(consent_p4))
         .route("/peer/consent/p2", get(crate::consent::consent_p2))
         .route("/peer/consent", post(crate::consent::peer_consent))
+        .route("/peer/consent/p8", get(crate::consent_a4::consent_p8))
+        .route("/peer/screen/p8", get(crate::consent_a4::consent_p8))
+        .route(
+            "/peer/consent/p9",
+            get(crate::consent_a4::consent_p9).post(crate::consent_a4::peer_consent_p9),
+        )
         .route("/peer/ack", post(peer_ack))
         .route("/peer/kill", post(peer_kill))
         .route("/peer/resume", post(peer_resume))
@@ -130,6 +136,7 @@ async fn peer_kill(State(app): State<AppState>) -> Json<Value> {
     {
         let mut g = app.state.write().await;
         g.kill_requested = true;
+        crate::offline::clear(&mut g);
         for st in g.streams.values_mut() {
             if !st.closed {
                 st.closed = true;

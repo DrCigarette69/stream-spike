@@ -108,6 +108,7 @@ where
         g.online = true;
         g.last_error.clear();
         g.force_disconnect = false;
+        crate::offline::clear(&mut g);
     }
     eprintln!("peer online {peer_id} endpoint={endpoint_id} ack={ack}");
 

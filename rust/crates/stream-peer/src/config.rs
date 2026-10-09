@@ -20,6 +20,10 @@ pub struct Config {
     pub gateway_endpoint_id: String,
     /// A3.2: `SPIKE_P2_CONSENT=1` headless preset (only effective with an ISP ack).
     pub p2_consent_preset: bool,
+    /// A4: `SPIKE_PUBLIC_EGRESS` (default off). With `iroh_pilot` => P9 required before dial.
+    pub public_egress: bool,
+    /// A4: `SPIKE_P9_ACK=1` headless preset (only with P1 + P2 and P9 required).
+    pub p9_ack_preset: bool,
 }
 
 impl Config {
@@ -65,12 +69,33 @@ impl Config {
                 std::env::var("SPIKE_P2_CONSENT").unwrap_or_default().trim(),
                 "1" | "true" | "yes"
             ),
+            public_egress: matches!(
+                std::env::var("SPIKE_PUBLIC_EGRESS").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            p9_ack_preset: matches!(
+                std::env::var("SPIKE_P9_ACK").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
         }
     }
 }
 
 pub fn is_iroh_loopback(transport: &str) -> bool {
     matches!(transport, "iroh" | "iroh_loopback")
+}
+
+/// A4 pilot transport name (ALPHA4_PILOT.md). Recognized for the P9 gate; the
+/// pilot dial itself is A4.4 and not built yet, so the Peer refuses it at startup.
+pub fn is_iroh_pilot(transport: &str) -> bool {
+    transport == "iroh_pilot"
+}
+
+impl Config {
+    /// P9 is shown/required only for `iroh_pilot` with `SPIKE_PUBLIC_EGRESS=1`.
+    pub fn p9_required(&self) -> bool {
+        is_iroh_pilot(&self.transport) && self.public_egress
+    }
 }
 
 /// A3 real-iroh mode (Rust only, opt-in). Distinct from A1.1 `iroh_loopback`.

@@ -35,6 +35,10 @@ pub struct PeerState {
     /// A3.2: P2 consent accepted -- its own gate after P1 (`POST /peer/consent`
     /// or `SPIKE_P2_CONSENT=1` + ack). Only gates iroh_local dials.
     pub p2_consent: bool,
+    /// A4: P9 allowlist note accepted (only meaningful when `cfg.public_egress`).
+    pub p9_ack: bool,
+    /// A4: current P8 system-offline reason code (machine-only, never shown).
+    pub p8_reason: Option<String>,
 }
 
 impl PeerState {
@@ -55,11 +59,16 @@ impl PeerState {
             ux_screen: None,
             force_disconnect: false,
             p2_consent: false,
+            p9_ack: false,
+            p8_reason: None,
         };
         if ack.is_empty() {
             let _ = st.set_ux(Some("P1"), ux::p1_user_facing());
         } else if st.cfg.p2_consent_preset {
             st.p2_consent = true;
+            if st.cfg.p9_required() && st.cfg.p9_ack_preset {
+                st.p9_ack = true;
+            }
         }
         st
     }
@@ -69,6 +78,7 @@ impl PeerState {
         self.isp_ack_version = version.to_string();
         if version.is_empty() {
             self.p2_consent = false;
+            self.p9_ack = false;
         }
     }
 
@@ -78,6 +88,21 @@ impl PeerState {
             return Err("p1_ack_required");
         }
         self.p2_consent = accepted;
+        if !accepted {
+            self.p9_ack = false;
+        }
+        Ok(())
+    }
+
+    /// A4 P9 accept / withdraw. Only for iroh_pilot + public egress; accept needs P2.
+    pub fn set_p9_ack(&mut self, accepted: bool) -> Result<(), &'static str> {
+        if !self.cfg.p9_required() {
+            return Err("p9_not_applicable");
+        }
+        if accepted && !self.p2_consent {
+            return Err("p2_consent_required");
+        }
+        self.p9_ack = accepted;
         Ok(())
     }
 

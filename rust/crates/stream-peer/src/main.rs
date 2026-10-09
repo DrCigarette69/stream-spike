@@ -1,7 +1,9 @@
 //! Stream Peer (Rust) -- Alpha-2 A2.1 parity with Python `peer/main.py`.
 //! Stubs only: fake Relay / iroh loopback; no public egress.
+mod a4_copy;
 mod admin;
 mod config;
+mod consent_a4;
 mod consent;
 mod egress;
 mod frames;
@@ -11,6 +13,7 @@ mod iroh_key;
 mod iroh_local;
 mod iroh_ticket;
 mod kill;
+mod offline;
 mod relay;
 mod session;
 mod state;
@@ -54,7 +57,10 @@ async fn main() {
         .expect("http client");
 
     let transport_slot = kill::TransportSlot::default();
-    if config::is_iroh_local(&cfg.transport) {
+    if config::is_iroh_pilot(&cfg.transport) {
+        // A4: gates + P8/P9 copy only; the pilot dial is A4.4.
+        iroh_local::spawn_iroh_pilot_refusal(state.clone());
+    } else if config::is_iroh_local(&cfg.transport) {
         // A3.2: real iroh dial (part 2) or a clean refusal; admin stays up.
         iroh_local::spawn_iroh_local(
             state.clone(),
