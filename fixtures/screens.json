@@ -13,7 +13,11 @@
       "number": 1,
       "code": "balance_grace",
       "event": "balance.grace_enter",
-      "required_copy": ["Balance hit zero", "Finishing this transfer", "Grace left"],
+      "required_copy": [
+        "Balance hit zero",
+        "Finishing this transfer",
+        "Grace left"
+      ],
       "script": "spike_grace_stop.sh",
       "order": 1
     },
@@ -22,7 +26,11 @@
       "number": 2,
       "code": "balance_exhausted",
       "event": "balance.grace_exhausted",
-      "required_copy": ["Session stopped", "Prepaid balance empty", "Add funds"],
+      "required_copy": [
+        "Session stopped",
+        "Prepaid balance empty",
+        "Add funds"
+      ],
       "script": "spike_grace_stop.sh",
       "order": 2
     },
@@ -41,8 +49,18 @@
     }
   ],
   "consent": [
-    {"id": "c0_aup", "screen": "C0", "gate": "aup_accepted"},
-    {"id": "c3_attest_denylist", "screen": "C3", "required_copy": ["blocked"]},
+    {
+      "id": "c0_aup",
+      "screen": "C0",
+      "gate": "aup_accepted"
+    },
+    {
+      "id": "c3_attest_denylist",
+      "screen": "C3",
+      "required_copy": [
+        "blocked"
+      ]
+    },
     {
       "id": "p1_isp_ack",
       "screen": "P1",
@@ -63,14 +81,20 @@
       "rules": [
         "No enroll / no HELLO / no Relay accept until isp_ack_version set",
         "Warn, do not waive — counsel owns final legal text",
-        "Continue disabled until checkbox"
-      ]
+        "Continue disabled until checkbox",
+        "A4 pilot: pending counsel is OK only while Jeff's own devices share; final counsel text required before any other Peer shares"
+      ],
+      "legal_status": "pending_counsel"
     },
     {
       "id": "p2_consent",
       "screen": "P2",
       "title": "Sharing preferences",
-      "required_copy": ["do not read page contents", "Matching may pause", "compromised device"],
+      "required_copy": [
+        "do not read page contents",
+        "Matching may pause",
+        "compromised device"
+      ],
       "body_lines": [
         "We log your account, time, destination host and port, bytes, and location tier. We do not read page contents.",
         "Matching may pause when the network is thin or under load in your area.",
@@ -96,7 +120,14 @@
         "Do not auto-resume after kill"
       ]
     },
-    {"id": "p6_cashout", "screen": "P6", "required_copy": ["Minimum cashout: $25"], "min_usd": 25},
+    {
+      "id": "p6_cashout",
+      "screen": "P6",
+      "required_copy": [
+        "Minimum cashout: $25"
+      ],
+      "min_usd": 25
+    },
     {
       "id": "c2_add_funds_mock",
       "screen": "C2",
@@ -118,6 +149,80 @@
         "Mock Stripe only — never live KYC/Stripe",
         "Entry from Screen 2 exhausted CTA or C2 wallet",
         "After success: reconnect/create — do not imply free wind-down"
+      ]
+    },
+    {
+      "id": "c2_add_funds_test",
+      "screen": "C2",
+      "alpha": "A4",
+      "gate": "stripe_test_topup",
+      "cta": "Add funds",
+      "required_copy": [
+        "Add funds",
+        "Test mode",
+        "no real charge",
+        "Funds added"
+      ],
+      "body_lines": [
+        "Add funds",
+        "Test mode: this uses a Stripe test card, so there's no real charge.",
+        "Funds added. Prepaid balance updated.",
+        "Reconnect or create a new session to keep going."
+      ],
+      "error_lines": {
+        "payment_failed": "That test payment didn't go through. Your balance hasn't changed."
+      },
+      "rules": [
+        "Stripe test mode only, never live keys",
+        "Balance updates only after Control receives the payment confirmation, not on button press",
+        "After success: reconnect/create, do not imply free wind-down",
+        "c2_add_funds_mock stays for A1.3 runs without a Stripe key"
+      ]
+    },
+    {
+      "id": "p8_offline",
+      "screen": "P8",
+      "alpha": "A4",
+      "title": "You're offline",
+      "required_copy": [
+        "isn't sharing right now",
+        "No traffic is going through your connection"
+      ],
+      "body_lines": [
+        "This device isn't sharing right now.",
+        "No traffic is going through your connection."
+      ],
+      "reason_lines": {
+        "endpoint_mismatch": "This device's sharing key doesn't match how it was set up. Set up sharing again on this device to keep going.",
+        "endpoint_bind_required": "This device's sharing key doesn't match how it was set up. Set up sharing again on this device to keep going.",
+        "connection_lost": "The connection dropped. Check your internet, then turn sharing back on."
+      },
+      "cta": "Turn sharing back on",
+      "rules": [
+        "Never show raw reason codes to the user; map to reason_lines",
+        "Do not auto-retry after endpoint_mismatch",
+        "Turning sharing back on still requires P1 ack + P2 consent on record",
+        "Distinct from P4: P4 is user-paused, P8 is stopped by the system"
+      ]
+    },
+    {
+      "id": "p9_allowlist",
+      "screen": "P9",
+      "alpha": "A4",
+      "title": "Pilot: limited sharing",
+      "required_copy": [
+        "short list of test sites",
+        "blocked on this device"
+      ],
+      "body_lines": [
+        "During this pilot, your connection is only used to reach a short list of test sites.",
+        "Requests to anything else are blocked on this device before they leave.",
+        "You can pause sharing at any time."
+      ],
+      "rules": [
+        "Show after P2 and before the first dial, only when public egress is switched on",
+        "Do not list or name the test sites in copy",
+        "Not shown when egress is off (default Alpha-3 behavior)"
       ]
     }
   ],
