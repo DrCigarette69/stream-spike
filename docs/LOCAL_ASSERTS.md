@@ -260,3 +260,29 @@ SPIKE_A3=1 ./scripts/demo_alpha.sh                      # default demo steps, th
    - Copy: a3 starts the `iroh_local` Peer in its own netns (no ack, so it never dials), calls `GET /peer/consent/p2` and captures the real stderr. The `UX P2` block must be followed by `UX_SCREEN p2_consent` and contain every `p2_consent.required_copy` fragment, **read from `fixtures/screens.json`** (nothing hardcoded), with none of the fixture's `forbidden_user_facing_substrings`.
 4. **Banned words (existing checks, unchanged):** `cargo test --locked -p stream-peer -- ux:: iroh_local::` (fixture drift, forbidden copy, screen order). The client-cli `forbid_brand` and `peer_alpha1_cli` `assert_no_forbidden` checks still run in `all` / `demo_alpha.sh`.
 5. **Exit codes:** green prints `A3_IROH_LOCAL_GREEN` (exit 0). Not green prints `A3_IROH_LOCAL_NOT_GREEN pending: ...` and exits 1 under `SPIKE_A3=1` / `SPIKE_IMPL=rust`, otherwise 3. It never exits 0 without the green. Any failed check prints `FAIL ...` and exits 1.
+
+## Alpha-4 compose guard (A4.0)
+
+Platform's smoke `scripts/a40_compose_guard_smoke.py`, wrapped with the shared smoke helper. **Opt-in, not in `all`.** Needs `sudo docker` (no cargo).
+
+```bash
+python3 scripts/run_local_asserts.py a40               # → A4.0_COMPOSE_GUARD_GREEN (aliases: compose-guard, compose_guard)
+```
+
+- Missing `docker` / `sudo -n` → `SKIP a40 ...` (exit 0), unless `SPIKE_A4=1` or `SPIKE_IMPL=rust` → `FAIL a40: ...` (exit 1). Uses its own compose project (`a40-<port>`, `SPIKE_PORT_BASE` or 27310).
+- The smoke checks the image's `spike_private_guard.py` is byte-identical to `scripts/`; after the guard changes, rebuild the Control image.
+
+## Alpha-4 pilot guard (A4.1)
+
+Spec: [`ALPHA4_PILOT.md`](ALPHA4_PILOT.md) (Guard changes). No stack, no network: the resolver is injected in tests.
+
+```bash
+python3 scripts/run_local_asserts.py a41                                   # → A4.1_PILOT_GUARD_GREEN (aliases: pilot-guard, pilot_guard)
+cd rust && cargo test -p stream-proto --locked guard::pilot                # Rust tests (Lane::Pilot build)
+cd rust && cargo test -p stream-proto --locked --features a4_local guard::pilot
+python3 scripts/spike_private_guard.py --pilot                             # Python mirror pilot self-test
+```
+
+- Rust: `rust/crates/stream-proto/src/guard/pilot.rs` (re-exported from `stream_proto::guard`). Python: A4.1 section of `scripts/spike_private_guard.py`.
+- Reasons: `relay_config`, `relay_required`, `egress_allowlist_config`, `egress_not_allowlisted`, `egress_resolved_non_public`, `egress_resolve_failed`, `egress_off`, `egress_allowlist_mismatch`, `egress_budget_exceeded`, `transport_not_pilot`, `stripe_live_key_refused`. Log line `a4_refuse_<reason>:<detail>`.
+- Missing `cargo` → Rust half skipped with a message, unless `SPIKE_IMPL=rust` or `SPIKE_A4=1` (then `FAIL a41`). `a30` is unchanged (its `guard` filter now also runs the pilot tests).

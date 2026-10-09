@@ -16,9 +16,16 @@
 //!   (`discovery_refused`).
 //!
 //! Stable reason strings: see the `REASON_*` constants.
+//!
+//! Alpha-4 (A4.1) additions live in `guard::pilot` (re-exported); see `docs/ALPHA4_PILOT.md`.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+/// A4.1 pilot guard (Alpha-4 `iroh_pilot`): relay allowlist, egress allowlist + SSRF check,
+/// kill switch. Re-exported here so callers use `stream_proto::guard::*`.
+pub mod pilot;
+pub use pilot::*;
 
 pub const ENV_ALLOW_CIDRS: &str = "SPIKE_IROH_ALLOW_CIDRS";
 pub const DEFAULT_ALLOW_CIDRS: &str = "10.73.0.0/24,127.0.0.0/8";
@@ -48,8 +55,12 @@ impl GuardError {
     }
 
     /// Log line per ALPHA3_IROH.md: `a3_refuse_non_private:<addr>` for public /
-    /// allowlist misses, `a3_refuse_<reason>:<detail>` otherwise.
+    /// allowlist misses, `a3_refuse_<reason>:<detail>` otherwise. A4 reasons
+    /// (`pilot::A4_REASONS`, ALPHA4_PILOT.md) log as `a4_refuse_<reason>:<detail>`.
     pub fn log_line(&self) -> String {
+        if pilot::A4_REASONS.contains(&self.reason) {
+            return format!("a4_refuse_{}:{}", self.reason, self.detail);
+        }
         match self.reason {
             REASON_PUBLIC_ADDR | REASON_ALLOWLIST_MISS => {
                 format!("a3_refuse_non_private:{}", self.detail)

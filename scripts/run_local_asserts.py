@@ -165,7 +165,7 @@ def run_a30_private_guard():
     print("\nA3.0_PRIVATE_GUARD_GREEN", flush=True)
 
 
-def _run_netns_smoke(tag, title, script, marker):
+def _run_netns_smoke(tag, title, script, marker, needs=("cargo", "sudo"), strict_env="SPIKE_A3"):
     """Run a sudo-netns A3 smoke (a31/a32/a33) as the current user.
 
     These smokes build stream-gateway `--features iroh` into rust/target/iroh, then run
@@ -178,24 +178,28 @@ def _run_netns_smoke(tag, title, script, marker):
     Not part of `all` (needs sudo). Skips cleanly when cargo or `sudo -n` is unavailable,
     unless SPIKE_IMPL=rust or SPIKE_A3=1 (then it fails).
 
+    `needs` / `strict_env` let A4 smokes reuse it (a40: needs sudo + docker, strict under SPIKE_A4=1).
+
     Returns ("pass", combined_output) or ("skip", ""); failures raise SystemExit."""
     import shutil
 
     print(f"\n=== {script} ({title}) ===", flush=True)
     impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
-    strict = impl == "rust" or os.environ.get("SPIKE_A3", "").strip() == "1"
-    why = "SPIKE_IMPL=rust" if impl == "rust" else "SPIKE_A3=1"
+    strict = impl == "rust" or os.environ.get(strict_env, "").strip() == "1"
+    why = "SPIKE_IMPL=rust" if impl == "rust" else f"{strict_env}=1"
 
     def unavailable(reason):
         if strict:
             raise SystemExit(f"FAIL {tag}: {reason} but {why}")
-        print(f"SKIP {tag} {script}: {reason} (set SPIKE_A3=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
+        print(f"SKIP {tag} {script}: {reason} (set {strict_env}=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
         return "skip", ""
 
-    if shutil.which("cargo") is None:
+    if "cargo" in needs and shutil.which("cargo") is None:
         return unavailable("cargo not found")
+    if "docker" in needs and shutil.which("docker") is None:
+        return unavailable("docker not found")
     if shutil.which("sudo") is None:
-        return unavailable("sudo not found (needed for ip netns)")
+        return unavailable("sudo not found (needed for ip netns / docker)")
     if os.geteuid() != 0:
         try:
             p = subprocess.run(["sudo", "-n", "true"], stdin=subprocess.DEVNULL,
@@ -217,6 +221,49 @@ def _run_netns_smoke(tag, title, script, marker):
         raise SystemExit(f"FAIL {script} (rc={p.returncode}, green_marker={green})")
     print(f"PASS {script}", flush=True)
     return "pass", p.stdout
+
+
+def run_a40_compose_guard():
+    """A4.0 compose Control mints iroh_local tickets (Platform's scripts/a40_compose_guard_smoke.py).
+    Needs sudo docker; SKIP without it unless SPIKE_A4=1 / SPIKE_IMPL=rust."""
+    return _run_netns_smoke("a40", "A4.0", "a40_compose_guard_smoke", "A4.0_COMPOSE_GUARD_GREEN",
+                            needs=("sudo", "docker"), strict_env="SPIKE_A4")
+
+
+def run_a41_pilot_guard():
+    """A4.1 pilot guard: Rust stream-proto::guard::pilot tests (default + feature a4_local) and the
+    Python mirror's pilot self-test. No stack, no network (resolver injected).
+    Same skip/fail as a30, and missing cargo is also fatal under SPIKE_A4=1."""
+    import shutil
+
+    print("\n=== A4.1 pilot guard (rust stream-proto::guard::pilot) ===", flush=True)
+    impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
+    strict = impl == "rust" or os.environ.get("SPIKE_A4", "").strip() == "1"
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        if strict:
+            raise SystemExit("FAIL a41: cargo not found but " + ("SPIKE_IMPL=rust" if impl == "rust" else "SPIKE_A4=1"))
+        print("SKIP a41 rust pilot guard tests: cargo not found (set SPIKE_A4=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
+    else:
+        for extra in ([], ["--features", "a4_local"]):
+            p = subprocess.run(
+                [cargo, "test", "-p", "stream-proto", "--locked", *extra, "guard::pilot"],
+                cwd=str(ROOT / "rust"), stdin=subprocess.DEVNULL,
+            )
+            if p.returncode != 0:
+                raise SystemExit(f"FAIL a41 rust pilot guard tests {' '.join(extra)}".rstrip())
+        print("PASS a41 rust pilot guard tests (default + a4_local)", flush=True)
+
+    print("\n=== A4.1 pilot guard (python spike_private_guard --pilot) ===", flush=True)
+    p = subprocess.run(
+        [sys.executable, "-u", str(ROOT / "scripts" / "spike_private_guard.py"), "--pilot"],
+        cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    sys.stdout.write(p.stdout)
+    if p.returncode != 0 or "A4.1_PY_PILOT_SELFTEST_OK" not in p.stdout.split():
+        raise SystemExit("FAIL a41 python pilot self-test")
+    print("PASS a41 python pilot self-test", flush=True)
+    print("\nA4.1_PILOT_GUARD_GREEN", flush=True)
 
 
 def run_a31_gateway_endpoint():
@@ -494,6 +541,12 @@ def main():
         return 0
     if mode in ("a30", "private-guard", "private_guard"):
         run_a30_private_guard()
+        return 0
+    if mode in ("a40", "compose-guard", "compose_guard"):
+        run_a40_compose_guard()
+        return 0
+    if mode in ("a41", "pilot-guard", "pilot_guard"):
+        run_a41_pilot_guard()
         return 0
     if mode in ("a31", "gateway-endpoint", "gateway_endpoint"):
         run_a31_gateway_endpoint()

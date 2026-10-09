@@ -7,3 +7,9 @@ description = "Shared ALPN/AUTH_TICKET + wire helpers for Stream Peer/Gateway"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# A4.1: on-box a4 lanes only. Lets the pilot guard accept the local relay
+# http://10.73.0.254:<port>/ and TEST-NET-2 (198.51.100.0/24) test-site IPs.
+# Peer/Gateway forward it as `a4_local = ["stream-proto/a4_local"]`. Never in pilot builds.
+a4_local = []
