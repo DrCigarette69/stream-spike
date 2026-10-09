@@ -47,7 +47,8 @@ pub(crate) async fn handle_auth_ticket<W: AsyncWrite + Unpin>(
     let plane = state.read().await.egress.clone();
     let mut pinned = None;
     if let Some(p) = &plane {
-        match crate::pilot_egress::check_and_pin(p, &dest_host, dest_port).await {
+        let sid = msg.get("stream_id").and_then(|v| v.as_str()).unwrap_or("");
+        match crate::pilot_egress::check_and_pin(p, sid, &dest_host, dest_port).await {
             Ok(a) => pinned = Some(a),
             Err(r) => {
                 state.write().await.auth_rejects += 1;
@@ -163,13 +164,8 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
                 .unwrap_or("")
                 .to_string();
             let n = msg.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
-            let plane = state.read().await.egress.clone();
-            if let Some(p) = plane {
-                let mut p = p.lock().unwrap();
-                if p.add_bytes(n).is_err() {
-                    p.close_all(stream_proto::guard::REASON_EGRESS_BUDGET_EXCEEDED);
-                }
-            }
+            // A4.4: the pilot budget counts only real bytes on the pinned socket
+            // (pilot_egress::pump), never Gateway-reported `n` (no double count).
             let mut g = state.write().await;
             if let Some(st) = g.streams.get_mut(&sid) {
                 if !st.closed {

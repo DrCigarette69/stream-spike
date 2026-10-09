@@ -5,8 +5,10 @@
 //! `resolve_and_pin` (allowlist before DNS, SSRF on every answer) -> connect to
 //! that exact SocketAddr. Refusals log `a4_refuse_<reason>:<detail>`.
 use crate::egress::egress_denied;
-use std::collections::HashMap;
+use crate::egress_budget::{self, Loaded, FLUSH_BYTES, FLUSH_SECS, R_UNREADABLE};
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use stream_proto::guard::{
@@ -21,6 +23,15 @@ use tokio::time::{timeout, Duration};
 pub type SharedPlane = Arc<Mutex<EgressPlane>>;
 pub type DynResolver = Arc<dyn Resolver + Send + Sync>;
 pub const P8_STALE: &str = "egress_state_stale";
+/// No guard name exists for this; Peer-local per-connection reason.
+pub const R_STREAM_LIMIT: &str = "egress_stream_limit";
+pub const ENV_MAX_STREAMS: &str = "SPIKE_EGRESS_MAX_STREAMS";
+pub const DEFAULT_MAX_STREAMS: usize = 2;
+
+/// `SPIKE_EGRESS_MAX_STREAMS`: default 2 (doc), clamp 1..=16, invalid -> 2.
+pub fn max_streams_from(v: Option<&str>) -> usize {
+    v.and_then(|s| s.trim().parse::<usize>().ok()).map(|n| n.clamp(1, 16)).unwrap_or(DEFAULT_MAX_STREAMS)
+}
 
 /// One refused OPEN: stable reason (sent in AUTH_REJECT / CLOSE) + log line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +77,17 @@ pub struct EgressPlane {
     pub lane: Lane,
     pub resolver: DynResolver,
     pub last_state: Option<(bool, String)>,
+    pub max_streams: usize,
+    /// Admitted at AUTH_TICKET, not yet connected (count toward the stream cap).
+    reserved: HashSet<String>,
+    /// Persistent daily counter file (None = memory only, unit tests).
+    pub store: Option<PathBuf>,
+    saved_used: u64,
+    last_save: Instant,
+    /// Counter file unreadable/corrupt/unwritable: fail closed until UTC day changes.
+    pub unreadable: Option<&'static str>,
+    /// UTC day source (days since epoch); tests inject.
+    pub day_fn: fn() -> u64,
 }
 
 impl std::fmt::Debug for EgressPlane {
@@ -95,7 +117,74 @@ impl EgressPlane {
             lane: Lane::build(),
             resolver: Arc::new(StdResolver),
             last_state: None,
+            max_streams: DEFAULT_MAX_STREAMS,
+            reserved: HashSet::new(),
+            store: None,
+            saved_used: 0,
+            last_save: Instant::now(),
+            unreadable: None,
+            day_fn: utc_day,
         }
+    }
+
+    /// Load today's count from the budget file (missing -> 0; bad -> fail closed).
+    pub fn attach_store(&mut self, path: PathBuf) {
+        self.day = (self.day_fn)();
+        match egress_budget::load(&path, self.day) {
+            Loaded::Bytes(b) => {
+                self.used = b;
+                self.saved_used = b;
+                self.unreadable = None;
+            }
+            Loaded::Unreadable(d) => {
+                eprintln!("a4_refuse_egress_budget:{d}");
+                self.unreadable = Some(d);
+            }
+        }
+        eprintln!("peer egress_budget path={} bytes={} cap={}", path.display(), self.used, self.cap);
+        self.store = Some(path);
+    }
+
+    /// Persist when >= 1 MB unsaved, >= 5 s since last write with changes, or `force`.
+    /// Never overwrites an unreadable file before the day rolls over. A failed
+    /// write fails closed (`state_unwritable`).
+    pub fn flush(&mut self, force: bool) {
+        let Some(path) = self.store.clone() else { return };
+        if self.unreadable.is_some() || self.used == self.saved_used && !force {
+            return;
+        }
+        let due = force
+            || self.used.saturating_sub(self.saved_used) >= FLUSH_BYTES
+            || self.last_save.elapsed().as_secs() >= FLUSH_SECS;
+        if !due {
+            return;
+        }
+        match egress_budget::save(&path, self.day, self.used, &self.version) {
+            Ok(()) => {
+                self.saved_used = self.used;
+                self.last_save = Instant::now();
+            }
+            Err(e) => {
+                eprintln!("a4_refuse_egress_budget:state_unwritable:{e}");
+                self.unreadable = Some("state_unwritable");
+            }
+        }
+    }
+
+    /// Reserve a stream slot (per-connection; never P8). Ok(true) = new reservation.
+    pub fn reserve(&mut self, sid: &str) -> Result<bool, Refuse> {
+        if self.reserved.contains(sid) || self.conns.contains_key(sid) {
+            return Ok(false);
+        }
+        if self.conns.len() + self.reserved.len() >= self.max_streams {
+            return Err(Refuse { reason: R_STREAM_LIMIT.into(), line: format!("a4_refuse_{R_STREAM_LIMIT}:{}", self.max_streams) });
+        }
+        self.reserved.insert(sid.to_string());
+        Ok(true)
+    }
+
+    pub fn unreserve(&mut self, sid: &str) {
+        self.reserved.remove(sid);
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -110,10 +199,13 @@ impl EgressPlane {
     }
 
     fn roll_day(&mut self) {
-        let d = utc_day();
+        let d = (self.day_fn)();
         if d != self.day {
             self.day = d;
             self.used = 0;
+            self.saved_used = u64::MAX; // force a fresh file for the new day
+            self.unreadable = None;
+            self.flush(true);
         }
     }
 
@@ -121,6 +213,9 @@ impl EgressPlane {
     pub fn status_at(&mut self, now_ms: u64) -> Result<(), GuardError> {
         self.roll_day();
         self.switch.check_open(now_ms, &self.version)?;
+        if let Some(d) = self.unreadable {
+            return Err(GuardError { reason: R_UNREADABLE, detail: d.to_string() });
+        }
         check_egress_budget(self.used, 1, self.cap)
     }
 
@@ -141,19 +236,27 @@ impl EgressPlane {
     /// Count bytes (either direction) against today's cap.
     pub fn add_bytes(&mut self, n: u64) -> Result<(), GuardError> {
         self.roll_day();
-        check_egress_budget(self.used, n, self.cap)?;
-        self.used += n;
-        Ok(())
+        if let Some(d) = self.unreadable {
+            return Err(GuardError { reason: R_UNREADABLE, detail: d.to_string() });
+        }
+        let r = check_egress_budget(self.used, n, self.cap);
+        // Over the cap: count up to the cap so a restart still sees it hit.
+        self.used = if r.is_ok() { self.used + n } else { self.cap.max(self.used) };
+        self.flush(r.is_err());
+        r
     }
 
     pub fn register(&mut self, sid: &str, target: String) -> watch::Receiver<Option<&'static str>> {
         let (tx, rx) = watch::channel(None);
+        self.reserved.remove(sid);
         self.conns.insert(sid.to_string(), Conn { target, kill: tx });
         rx
     }
 
     pub fn unregister(&mut self, sid: &str) {
         self.conns.remove(sid);
+        self.reserved.remove(sid);
+        self.flush(true);
     }
 
     pub fn open_streams(&self) -> usize {
@@ -168,6 +271,8 @@ impl EgressPlane {
             eprintln!("peer egress_close {sid} {} reason={reason}", c.target);
             self.pending_close.push((sid, reason.to_string()));
         }
+        self.reserved.clear();
+        self.flush(true);
         n
     }
 
@@ -182,6 +287,7 @@ impl EgressPlane {
 
     /// Gateway CLOSE / per-stream end: drop one connection, no CLOSE echoed.
     pub fn close_one(&mut self, sid: &str, reason: &'static str) {
+        self.reserved.remove(sid);
         if let Some(c) = self.conns.remove(sid) {
             let _ = c.kill.send(Some(reason));
         }
@@ -190,6 +296,7 @@ impl EgressPlane {
     /// Watchdog step at `now_ms`: any plane-wide stop closes everything now and
     /// returns the P8 key (after the start-up grace, or when streams were closed).
     pub fn tick_at(&mut self, now_ms: u64) -> Option<&'static str> {
+        self.flush(false);
         let e = self.status_at(now_ms).err()?;
         let closed = self.close_all(e.reason()) > 0;
         (closed || now_ms >= self.max_age_ms).then(|| p8_key(&e))
@@ -202,12 +309,28 @@ fn refused(r: Refuse) -> Refuse {
 }
 
 /// Status + floor + `resolve_and_pin` (blocking resolver off the runtime).
-pub async fn check_and_pin(plane: &SharedPlane, host: &str, port: u16) -> Result<SocketAddr, Refuse> {
-    let (allow, resolver, lane) = {
+/// Reserves one of `max_streams` slots for `sid` (released on refusal / close).
+pub async fn check_and_pin(plane: &SharedPlane, sid: &str, host: &str, port: u16) -> Result<SocketAddr, Refuse> {
+    let (allow, resolver, lane, fresh) = {
         let mut p = plane.lock().unwrap();
         p.admit(host, port).map_err(refused)?;
-        (p.allow.clone(), p.resolver.clone(), p.lane)
+        let fresh = p.reserve(sid).map_err(refused)?;
+        (p.allow.clone(), p.resolver.clone(), p.lane, fresh)
     };
+    let res = resolve_checked(host, port, allow, resolver, lane).await;
+    if res.is_err() && fresh {
+        plane.lock().unwrap().unreserve(sid);
+    }
+    res
+}
+
+async fn resolve_checked(
+    host: &str,
+    port: u16,
+    allow: EgressAllow,
+    resolver: DynResolver,
+    lane: Lane,
+) -> Result<SocketAddr, Refuse> {
     let (h, hp) = (host.to_string(), port);
     let r = tokio::task::spawn_blocking(move || resolve_and_pin(&h, hp, &allow, resolver.as_ref(), lane)).await;
     match r {
@@ -225,10 +348,17 @@ pub async fn connect_pinned(
     port: u16,
     addr: SocketAddr,
 ) -> Result<(TcpStream, watch::Receiver<Option<&'static str>>), Refuse> {
-    plane.lock().unwrap().admit(host, port).map_err(refused)?;
+    let admitted = plane.lock().unwrap().admit(host, port);
+    if let Err(r) = admitted {
+        plane.lock().unwrap().unreserve(sid);
+        return Err(refused(r));
+    }
     let s = match timeout(Duration::from_secs(5), TcpStream::connect(addr)).await {
         Ok(Ok(s)) => s,
-        _ => return Err(refused(Refuse { reason: "egress_connect_failed".into(), line: format!("peer egress_connect_failed:{host}:{port} pinned={addr}") })),
+        _ => {
+            plane.lock().unwrap().unreserve(sid);
+            return Err(refused(Refuse { reason: "egress_connect_failed".into(), line: format!("peer egress_connect_failed:{host}:{port} pinned={addr}") }));
+        }
     };
     let rx = plane.lock().unwrap().register(sid, format!("{host}:{port}"));
     eprintln!("peer egress_open {sid} {host}:{port} pinned={addr}");

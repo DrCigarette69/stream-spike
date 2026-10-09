@@ -12,26 +12,45 @@ use std::sync::{Arc, Mutex};
 use tokio::time::Duration;
 
 pub const ENV_STATE_URL: &str = "SPIKE_EGRESS_STATE_URL";
-const P8_EGRESS: [&str; 4] =
-    ["egress_off", "egress_state_stale", "egress_budget_exceeded", "egress_allowlist_mismatch"];
+const P8_EGRESS: [&str; 5] = [
+    "egress_off",
+    "egress_state_stale",
+    "egress_budget_exceeded",
+    "egress_budget_unreadable",
+    "egress_allowlist_mismatch",
+];
 
 /// Startup config check. `Ok(None)` outside iroh_pilot (Alpha-3 floor only).
 /// Any error refuses start with the guard's log line
 /// (`a4_refuse_egress_allowlist_config:<detail>`). Outside iroh_pilot the env is
 /// ignored (Alpha-3 unchanged).
-pub fn build_plane_from(cfg: &Config, allowlist: Option<&str>) -> Result<Option<SharedPlane>, String> {
+pub fn build_plane_from(
+    cfg: &Config,
+    allowlist: Option<&str>,
+    budget: Option<std::path::PathBuf>,
+) -> Result<Option<SharedPlane>, String> {
     if !config::is_iroh_pilot(&cfg.transport) {
         return Ok(None);
     }
     let allow = EgressAllow::parse(allowlist.unwrap_or("")).map_err(|e| e.log_line())?;
     let max_age = egress_state_max_age_ms_from_env();
     let switch = EgressSwitch::new(cfg.public_egress, max_age);
-    let plane = EgressPlane::new(allow, switch, max_age, egress_byte_cap_from_env());
+    let mut plane = EgressPlane::new(allow, switch, max_age, egress_byte_cap_from_env());
+    plane.max_streams = crate::pilot_egress::max_streams_from(
+        std::env::var(crate::pilot_egress::ENV_MAX_STREAMS).ok().as_deref(),
+    );
+    if let Some(b) = budget {
+        plane.attach_store(b);
+    }
     Ok(Some(Arc::new(Mutex::new(plane))))
 }
 
 pub fn build_plane(cfg: &Config) -> Result<Option<SharedPlane>, String> {
-    build_plane_from(cfg, std::env::var(ENV_EGRESS_ALLOWLIST).ok().as_deref())
+    build_plane_from(
+        cfg,
+        std::env::var(ENV_EGRESS_ALLOWLIST).ok().as_deref(),
+        Some(crate::egress_budget::budget_path(&cfg.iroh_key_path)),
+    )
 }
 
 pub fn state_url(cfg: &Config) -> String {
@@ -61,6 +80,9 @@ pub fn snapshot(plane: &SharedPlane) -> Value {
         "bytes_today": p.used,
         "byte_cap": p.cap,
         "open_streams": p.open_streams(),
+        "max_streams": p.max_streams,
+        "budget_path": p.store.as_ref().map(|s| s.display().to_string()),
+        "budget_state": p.unreadable.unwrap_or("ok"),
     })
 }
 

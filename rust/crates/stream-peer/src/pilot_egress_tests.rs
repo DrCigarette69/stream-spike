@@ -14,15 +14,15 @@ use stream_proto::guard::{EgressAllow, EgressSwitch, Lane, Resolver};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{Duration, Instant};
 
-const ALLOW: &str = "site1.pilot.example:443,site2.pilot.example:443";
+pub(crate) const ALLOW: &str = "site1.pilot.example:443,site2.pilot.example:443";
 
 #[derive(Default)]
-struct Fake {
+pub(crate) struct Fake {
     answers: Mutex<HashMap<String, Vec<Vec<IpAddr>>>>,
     calls: AtomicUsize,
 }
 impl Fake {
-    fn with(pairs: &[(&str, &[&[&str]])]) -> Arc<Self> {
+    pub(crate) fn with(pairs: &[(&str, &[&[&str]])]) -> Arc<Self> {
         let f = Fake::default();
         for (h, seq) in pairs {
             let v = seq.iter().map(|a| a.iter().map(|s| s.parse().unwrap()).collect()).collect();
@@ -40,7 +40,7 @@ impl Resolver for Fake {
     }
 }
 
-fn plane(r: Arc<Fake>, max_age: u64, cap: u64, lane: Lane) -> SharedPlane {
+pub(crate) fn plane(r: Arc<Fake>, max_age: u64, cap: u64, lane: Lane) -> SharedPlane {
     let allow = EgressAllow::parse(ALLOW).unwrap();
     let mut p = EgressPlane::new(allow, EgressSwitch::new(true, max_age), max_age, cap);
     p.resolver = r;
@@ -54,7 +54,7 @@ fn plane(r: Arc<Fake>, max_age: u64, cap: u64, lane: Lane) -> SharedPlane {
 async fn allowlisted_passes_others_refused_before_dns() {
     let r = Fake::with(&[("site1.pilot.example", &[&["93.184.216.34"]])]);
     let p = plane(r.clone(), 5000, 1 << 20, Lane::Pilot);
-    let a = check_and_pin(&p, "Site1.Pilot.Example.", 443).await.unwrap();
+    let a = check_and_pin(&p, "s1", "Site1.Pilot.Example.", 443).await.unwrap();
     assert_eq!(a.to_string(), "93.184.216.34:443");
     for (h, port, why) in [
         ("site1.pilot.example", 80, "egress_not_allowlisted"),
@@ -63,7 +63,7 @@ async fn allowlisted_passes_others_refused_before_dns() {
         ("site1.pilot.example", 8443, "port_8443_blocked"),
         ("169.254.169.254", 443, "metadata_blocked"),
     ] {
-        assert_eq!(check_and_pin(&p, h, port).await.unwrap_err().reason, why, "{h}:{port}");
+        assert_eq!(check_and_pin(&p, "s1", h, port).await.unwrap_err().reason, why, "{h}:{port}");
     }
     assert_eq!(r.calls.load(Ordering::SeqCst), 1, "unlisted names never reach DNS");
 }
@@ -73,20 +73,20 @@ async fn non_public_answers_and_rebinding_refused() {
     for bad in [&["10.1.2.3"][..], &["169.254.169.254"], &["127.0.0.1"], &["93.184.216.34", "10.0.0.5"], &["100.64.0.1"]] {
         let r = Fake::with(&[("site1.pilot.example", &[bad])]);
         let p = plane(r, 5000, 1 << 20, Lane::Pilot);
-        let e = check_and_pin(&p, "site1.pilot.example", 443).await.unwrap_err();
+        let e = check_and_pin(&p, "s1", "site1.pilot.example", 443).await.unwrap_err();
         assert_eq!(e.reason, "egress_resolved_non_public", "{bad:?}");
         assert!(e.line.starts_with("a4_refuse_egress_resolved_non_public:"), "{}", e.line);
     }
     let r = Fake::with(&[("site2.pilot.example", &[&["93.184.216.34"], &["192.168.1.1"]])]);
     let p = plane(r, 5000, 1 << 20, Lane::Pilot);
-    assert!(check_and_pin(&p, "site2.pilot.example", 443).await.is_ok());
-    assert_eq!(check_and_pin(&p, "site2.pilot.example", 443).await.unwrap_err().reason, "egress_resolved_non_public");
+    assert!(check_and_pin(&p, "s1", "site2.pilot.example", 443).await.is_ok());
+    assert_eq!(check_and_pin(&p, "s1", "site2.pilot.example", 443).await.unwrap_err().reason, "egress_resolved_non_public");
     let p = plane(Fake::with(&[]), 5000, 1 << 20, Lane::Pilot);
-    assert_eq!(check_and_pin(&p, "site1.pilot.example", 443).await.unwrap_err().reason, "egress_resolve_failed");
+    assert_eq!(check_and_pin(&p, "s1", "site1.pilot.example", 443).await.unwrap_err().reason, "egress_resolve_failed");
     // TEST-NET-2 is public only on the a4_local lane.
     let r = Fake::with(&[("site1.pilot.example", &[&["198.51.100.10"]])]);
-    assert!(check_and_pin(&plane(r.clone(), 5000, 1, Lane::Pilot), "site1.pilot.example", 443).await.is_err());
-    assert!(check_and_pin(&plane(r, 5000, 1, Lane::Local), "site1.pilot.example", 443).await.is_ok());
+    assert!(check_and_pin(&plane(r.clone(), 5000, 1, Lane::Pilot), "s1", "site1.pilot.example", 443).await.is_err());
+    assert!(check_and_pin(&plane(r, 5000, 1, Lane::Local), "s1", "site1.pilot.example", 443).await.is_ok());
 }
 
 #[test]
@@ -123,17 +123,17 @@ fn allowlist_version_stable() {
     let mut cfg = Config::from_env();
     cfg.transport = "iroh_pilot".into();
     for bad in ["", "*.example.com:443", "1.2.3.4:443", "example.com", "example.com:80", "10.0.0.0/8:443"] {
-        let e = build_plane_from(&cfg, Some(bad)).unwrap_err();
+        let e = build_plane_from(&cfg, Some(bad), None).unwrap_err();
         assert!(e.starts_with("a4_refuse_egress_allowlist_config:"), "{bad}: {e}");
     }
-    assert!(build_plane_from(&cfg, None).is_err());
-    let p = build_plane_from(&cfg, Some("a.example.com:443,b.example.com:443")).unwrap().unwrap();
+    assert!(build_plane_from(&cfg, None, None).is_err());
+    let p = build_plane_from(&cfg, Some("a.example.com:443,b.example.com:443"), None).unwrap().unwrap();
     assert_eq!(p.lock().unwrap().version, want);
     cfg.transport = "fake_relay".into();
-    assert!(build_plane_from(&cfg, Some("garbage")).unwrap().is_none(), "Alpha-3 ignores it");
+    assert!(build_plane_from(&cfg, Some("garbage"), None).unwrap().is_none(), "Alpha-3 ignores it");
 }
 
-async fn echo_server() -> std::net::SocketAddr {
+pub(crate) async fn echo_server() -> std::net::SocketAddr {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let a = l.local_addr().unwrap();
     tokio::spawn(async move {
@@ -163,7 +163,7 @@ async fn cap_hit_closes_stream() {
     assert_eq!(p.lock().unwrap().take_pending_close()[0].1, "egress_budget_exceeded");
 }
 
-fn pilot_state(p: &SharedPlane) -> SharedState {
+pub(crate) fn pilot_state(p: &SharedPlane) -> SharedState {
     let mut cfg = Config::from_env();
     cfg.transport = "iroh_pilot".into();
     cfg.public_egress = true;
@@ -233,10 +233,12 @@ async fn a44_netns_stand_in() {
     let ip = site.ip().to_string();
     let r = Fake::with(&[("site1.pilot.example", &[&[ip.as_str()]]), ("site2.pilot.example", &[&["169.254.169.254"]])]);
     let p = plane(r, 1000, 1 << 20, Lane::Local);
-    let addr = check_and_pin(&p, "site1.pilot.example", 443).await.unwrap();
+    let budget = std::path::PathBuf::from(std::env::var("SPIKE_A44_BUDGET").expect("SPIKE_A44_BUDGET"));
+    p.lock().unwrap().attach_store(budget.clone());
+    let addr = check_and_pin(&p, "s1", "site1.pilot.example", 443).await.unwrap();
     assert_eq!(addr, site);
-    assert_eq!(check_and_pin(&p, "site2.pilot.example", 443).await.unwrap_err().reason, "egress_resolved_non_public");
-    assert_eq!(check_and_pin(&p, "site1.pilot.example", 80).await.unwrap_err().reason, "egress_not_allowlisted");
+    assert_eq!(check_and_pin(&p, "s1", "site2.pilot.example", 443).await.unwrap_err().reason, "egress_resolved_non_public");
+    assert_eq!(check_and_pin(&p, "s1", "site1.pilot.example", 80).await.unwrap_err().reason, "egress_not_allowlisted");
     let (up, rx) = connect_pinned(&p, "s1", "site1.pilot.example", 443, addr).await.unwrap();
     let (down, mut client) = tokio::io::duplex(4096);
     let t = tokio::spawn({ let p = p.clone(); async move { pump(&p, "s1", up, down, rx).await } });
@@ -245,6 +247,12 @@ async fn a44_netns_stand_in() {
     client.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"hello pilot");
     assert_eq!(p.lock().unwrap().used, 22, "both directions counted");
+    // Stream cap (default 2): a second live stream is fine, a third is refused.
+    let a2 = check_and_pin(&p, "s2", "site1.pilot.example", 443).await.unwrap();
+    let (up2, _rx2) = connect_pinned(&p, "s2", "site1.pilot.example", 443, a2).await.unwrap();
+    let e = check_and_pin(&p, "s3", "site1.pilot.example", 443).await.unwrap_err();
+    assert_eq!((e.reason.as_str(), e.line.as_str()), ("egress_stream_limit", "a4_refuse_egress_stream_limit:2"));
+    drop(up2);
     let st = pilot_state(&p);
     let stop = Instant::now(); // Control "stops": no more updates
     while !t.is_finished() {
@@ -253,5 +261,7 @@ async fn a44_netns_stand_in() {
     }
     assert!(stop.elapsed() <= Duration::from_secs(5));
     assert_eq!(st.read().await.p8_reason.as_deref(), Some("egress_state_stale"));
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&budget).unwrap()).unwrap();
+    assert_eq!(saved["bytes"], 22, "closed stream flushed the counter");
     eprintln!("A44_NETNS_STAND_IN_OK closed_after_ms={}", stop.elapsed().as_millis());
 }

@@ -6,6 +6,7 @@ mod config;
 mod consent_a4;
 mod consent;
 mod egress;
+mod egress_budget;
 mod egress_state;
 mod frames;
 #[cfg(feature = "iroh_local")]
@@ -18,6 +19,8 @@ mod offline;
 mod pilot_egress;
 #[cfg(test)]
 mod pilot_egress_tests;
+#[cfg(test)]
+mod egress_budget_tests;
 mod relay;
 mod session;
 mod state;
@@ -109,5 +112,19 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("bind peer admin {addr}: {e}"));
+    // A4.4 (iroh_pilot only): flush the byte budget on SIGINT/SIGTERM, then exit.
+    // Other transports keep the default signal behavior.
+    if let Some(p) = state.read().await.egress.clone() {
+        tokio::spawn(async move {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("sigterm");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            p.lock().unwrap().flush(true);
+            eprintln!("peer egress_budget flushed on shutdown");
+            std::process::exit(0);
+        });
+    }
     axum::serve(listener, app).await.expect("serve");
 }

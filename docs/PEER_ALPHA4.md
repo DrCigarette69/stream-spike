@@ -82,9 +82,31 @@ Back on -> P8 cleared (`peer egress_on`). User stops (P4 kill, P1 cleared, P2/P9
 withdrawn) close pilot egress too, without P8. Startup/config failures exit before
 any P8 (`connection_lost` fallback if ever shown).
 
+Stream cap: `SPIKE_EGRESS_MAX_STREAMS` (default 2 = doc value; clamp 1..=16, invalid -> 2;
+**raising it above 2 needs Jeff's OK**). Slots are reserved at AUTH_TICKET and freed on
+refusal / close; a third concurrent OPEN -> `AUTH_REJECT {error:"egress_stream_limit",
+egress_refused:true}` + `a4_refuse_egress_stream_limit:<max>`, never P8 (no guard reason
+exists, so this is a Peer-local name).
+
+Persistent byte budget: `<dir of SPIKE_IROH_KEY_PATH>/.peer_egress_budget` (override
+`SPIKE_EGRESS_BUDGET_PATH`), JSON `{"utc_day":"YYYY-MM-DD","bytes":n,"allowlist_version":"<hex>"}`,
+mode 0600, atomic (temp `<file>.tmp.<pid>` in same dir, fsync, rename, fsync dir). Written
+after >= 1 MiB unsaved or >= 5 s with changes (watchdog), on every stream close, on cap hit,
+on UTC rollover and on SIGINT/SIGTERM (`peer egress_budget flushed on shutdown`; pilot only,
+other transports keep default signal handling). Start: `peer egress_budget path=<p> bytes=<n> cap=<cap>`.
+- Missing -> 0. Older UTC day -> 0. Future day (clock moved back) -> count kept.
+- Unreadable / not a regular file / group- or world-accessible -> `a4_refuse_egress_budget:state_unreadable`;
+  bad JSON / fields -> `a4_refuse_egress_budget:state_corrupt`; failed write ->
+  `a4_refuse_egress_budget:state_unwritable:<err>`. All fail closed until the next UTC day
+  (P8 `egress_budget_unreadable`; the file is left untouched that day, rewritten at rollover).
+- Real cap hit -> P8 `egress_budget_exceeded` (counter is stored at the cap).
+- Only real bytes on the pinned socket count (both directions, in `pump`); Gateway `BYTES n`
+  frames no longer count toward the pilot budget (no double count).
+
 Tests: `pilot_egress_tests.rs` (injected resolver; loopback sockets only) and
 `scripts/a44_peer_egress_smoke.py` -> `A4.4_PEER_EGRESS_PART1_GREEN` (TEST-NET-2
-stand-in 198.51.100.10:443 on `lo` of a no-default-route netns; a4_local lane injected
+stand-in 198.51.100.10:443 on `lo` of a no-default-route netns, plus 3rd-stream refusal and a
+real-binary restart that keeps `bytes_today` and a corrupt counter that fails closed; a4_local lane injected
 in the test since the cargo feature isn't forwarded by stream-peer yet).
 
 Part 1 limits / part 2: frames carry byte counts, not data, so OPEN holds the pinned
