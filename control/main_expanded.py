@@ -227,6 +227,10 @@ def verify_ticket(ticket_json: str) -> tuple[bool, str]:
             why = _iroh_verify(payload)
             if why:
                 return False, why
+        if _iroh_pilot():
+            why = _pilot_verify(payload)
+            if why:
+                return False, why
         return True, "ok"
     except Exception as e:
         return False, str(e)
@@ -297,6 +301,72 @@ def _iroh_verify(payload: dict) -> str | None:
         return "guard_unavailable"
     try:
         g.check_direct_addrs(addrs)
+    except g.GuardError as e:
+        return e.reason
+    return None
+
+
+# ---- A4.2 iroh_pilot tickets: relay-only via our one relay (SPIKE_RELAY_ALLOW_URL) ----
+def _iroh_pilot() -> bool:
+    return os.environ.get("SPIKE_TRANSPORT", "").strip().lower() == "iroh_pilot"
+
+
+def _a4_lane(g):
+    """Python mirror takes the lane explicitly. SPIKE_A4_LANE=local only on the on-box a4 lanes."""
+    return g.LANE_LOCAL if os.environ.get("SPIKE_A4_LANE", "").strip().lower() == "local" else g.LANE_PILOT
+
+
+def _pilot_direct_addrs() -> list[str]:
+    # Relay-only by default; any configured direct addr still goes through the A3.0 guard.
+    raw = os.environ.get("SPIKE_IROH_GATEWAY_ADDR", "")
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+
+def _pilot_bind(peer_endpoint_id) -> tuple[dict | None, str | None, str | None]:
+    """Returns (extra_payload, reason, detail). reason=None means OK."""
+    if not _valid_endpoint_id(peer_endpoint_id):
+        return None, "endpoint_bind_required", str(peer_endpoint_id)
+    gw = os.environ.get("SPIKE_GATEWAY_ENDPOINT_ID", "").strip() or DEV_GATEWAY_ENDPOINT_ID
+    if not _valid_endpoint_id(gw):
+        return None, "gateway_endpoint_invalid", gw
+    try:
+        g = _guard()
+    except ImportError:
+        return None, "guard_unavailable", "scripts/spike_private_guard.py"
+    addrs = _pilot_direct_addrs()
+    try:
+        allow = g.relay_allow_from_env(_a4_lane(g))
+        if allow is None:
+            return None, "relay_config", "SPIKE_RELAY_ALLOW_URL unset"
+        relay_url = allow.url()
+        g.check_relay_url_with(relay_url, allow)
+        g.check_relay_required(addrs, relay_url)
+        if addrs:
+            g.check_direct_addrs(addrs)
+    except g.GuardError as e:
+        return None, e.reason, e.log_line()
+    return {"gateway_endpoint_id": gw, "direct_addrs": addrs, "relay_url": relay_url}, None, None
+
+
+def _pilot_verify(payload: dict) -> str | None:
+    if not _valid_endpoint_id(payload.get("peer_endpoint_id")):
+        return "endpoint_bind_required"
+    addrs = payload.get("direct_addrs")
+    if not isinstance(addrs, list):
+        return "relay_required"
+    try:
+        g = _guard()
+    except ImportError:
+        return "guard_unavailable"
+    try:
+        allow = g.relay_allow_from_env(_a4_lane(g))
+        relay_url = payload.get("relay_url")
+        g.check_relay_required(addrs, relay_url)
+        if not relay_url:
+            return "relay_required"
+        g.check_relay_url_with(relay_url, allow)
+        if addrs:
+            g.check_direct_addrs(addrs)
     except g.GuardError as e:
         return e.reason
     return None
@@ -923,9 +993,11 @@ class Handler(BaseHTTPRequestHandler):
                 c.close()
                 return self._json(402, {"error": "insufficient_balance"})
             iroh_extra = None
-            if _iroh_local():
+            if _iroh_local() or _iroh_pilot():
                 # A3.3: bind the Peer's enrolled (Gateway-authenticated) endpoint ID.
-                iroh_extra, why, detail = _iroh_bind(q["endpoint_id"])
+                # A4.2: iroh_pilot also binds our one relay (relay_url), direct_addrs may be empty.
+                bind = _pilot_bind if _iroh_pilot() else _iroh_bind
+                iroh_extra, why, detail = bind(q["endpoint_id"])
                 if why:
                     c.close()
                     _emit("ticket.bind_refused", reason=why, peer_id=q["peer_id"], detail=detail)

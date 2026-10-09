@@ -8,6 +8,8 @@ pub const ALPN: &str = stream_proto::ALPN;
 const IROH_LOOPBACK: &[&str] = &["iroh", "iroh_loopback"];
 /// A3.1 real iroh endpoint (opt-in, `--features iroh`).
 pub const IROH_LOCAL: &str = "iroh_local";
+/// A4.2 relay-only iroh endpoint via our one self-hosted relay (opt-in, `--features iroh_pilot`).
+pub const IROH_PILOT: &str = stream_proto::guard::TRANSPORT_PILOT;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -41,6 +43,14 @@ impl Config {
                     .into(),
             );
         }
+        if transport == IROH_PILOT && !cfg!(feature = "iroh_pilot") {
+            return Err(
+                "SPIKE_TRANSPORT=iroh_pilot needs stream-gateway built with the iroh_pilot feature \
+                 (cargo build --locked -p stream-gateway --features iroh_pilot; relay-only path selection); \
+                 refusing to start"
+                    .into(),
+            );
+        }
 
         let relay_raw = if is_iroh_loopback(&transport) {
             std::env::var("SPIKE_IROH_LOOPBACK").unwrap_or_else(|_| "127.0.0.1:9101".into())
@@ -68,6 +78,11 @@ impl Config {
 
     pub fn is_iroh_local(&self) -> bool {
         self.transport == IROH_LOCAL
+    }
+
+    /// A4.2: relay-only iroh (`iroh_pilot`).
+    pub fn is_iroh_pilot(&self) -> bool {
+        self.transport == IROH_PILOT
     }
 
     #[allow(dead_code)]

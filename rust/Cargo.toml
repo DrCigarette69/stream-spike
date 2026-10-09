@@ -4,6 +4,7 @@ members = [
   "crates/stream-proto",
   "crates/stream-peer",
   "crates/stream-gateway",
+  "crates/stream-relay",
 ]
 
 [workspace.dependencies]
@@ -11,5 +12,5 @@ members = [
 # relays/discovery are disabled in code. Needs RustCrypto rc pins (see pin-msrv-deps.sh).
 iroh = { version = "=0.95.1", default-features = false }
 # A4.2 self-hosted relay (Platform): server lib/bin, same 0.95.1 that iroh/test-utils already pulls.
-# No member uses it yet, so it adds nothing to the default build.
+# Used only by stream-relay behind its `server` feature; the default build does not compile it.
 iroh-relay = { version = "=0.95.1", default-features = false, features = ["server"] }

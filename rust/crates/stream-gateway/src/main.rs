@@ -38,25 +38,37 @@ async fn main() {
         cfg.relay_listen_display(),
     );
 
-    if cfg.is_iroh_local() {
+    if cfg.is_iroh_local() || cfg.is_iroh_pilot() {
         // A3.1: real iroh endpoint replaces the TCP relay listener.
+        // A4.2: iroh_pilot = same endpoint, relay-only via our one relay.
         #[cfg(feature = "iroh")]
         {
-            let icfg = iroh_local::config_from_env().unwrap_or_else(|e| {
-                eprintln!("iroh_local refused: {e}");
+            let pilot = cfg.is_iroh_pilot();
+            let tag = if pilot { "iroh_pilot" } else { "iroh_local" };
+            let icfg = iroh_local::config_from_env(pilot).unwrap_or_else(|e| {
+                eprintln!("{tag} refused: {e}");
                 std::process::exit(2);
             });
             let ep = iroh_local::bind(&icfg).await.unwrap_or_else(|e| {
-                eprintln!("iroh_local refused: {e}");
+                eprintln!("{tag} refused: {e}");
                 std::process::exit(2);
             });
             st.gateway_endpoint_id = Some(ep.id().to_string());
             st.relay_listen = iroh_local::advertised_addr(&ep, &icfg).to_string();
-            println!(
-                "IROH_LOCAL_READY endpoint_id={} direct_addr={}",
-                ep.id(),
-                st.relay_listen
-            );
+            if let Some(p) = &icfg.pilot {
+                st.relay_url = Some(p.relay_url.to_string());
+                println!(
+                    "IROH_PILOT_READY endpoint_id={} relay_url={} path_selection=relay_only",
+                    ep.id(),
+                    p.relay_url
+                );
+            } else {
+                println!(
+                    "IROH_LOCAL_READY endpoint_id={} direct_addr={}",
+                    ep.id(),
+                    st.relay_listen
+                );
+            }
             tokio::spawn(iroh_local::run_accept(st.clone(), ep));
         }
     } else {

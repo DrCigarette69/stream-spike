@@ -32,7 +32,8 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
         let p = st.peers.read().await;
         p.keys().cloned().collect()
     };
-    Json(json!({
+    #[allow(unused_mut)]
+    let mut v = json!({
         "ok": true,
         "service": "gateway",
         "impl": "rust",
@@ -41,8 +42,17 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
         "transport": st.transport,
         "relay_listen": st.relay_listen,
         "gateway_endpoint_id": st.gateway_endpoint_id,
+        "relay_url": st.relay_url,
         "hardening": HARDENING,
-    }))
+    });
+    // A4.2: path evidence (datagrams via relay vs UDP) in iroh_pilot only.
+    #[cfg(feature = "iroh")]
+    if st.relay_url.is_some() {
+        if let Some(c) = crate::iroh_local::health_counters() {
+            v["iroh_path"] = c;
+        }
+    }
+    Json(v)
 }
 
 async fn gw_peers(State(st): State<AppState>) -> Json<Value> {

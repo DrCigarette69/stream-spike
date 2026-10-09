@@ -36,6 +36,8 @@ pub struct AppState {
     pub relay_listen: String,
     /// A3.1: this Gateway's iroh EndpointId (iroh_local only).
     pub gateway_endpoint_id: Option<String>,
+    /// A4.2: the one relay this Gateway uses (`iroh_pilot` only).
+    pub relay_url: Option<String>,
 }
 
 impl AppState {
@@ -51,6 +53,7 @@ impl AppState {
             transport,
             relay_listen,
             gateway_endpoint_id: None,
+            relay_url: None,
         }
     }
 }

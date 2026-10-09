@@ -27,7 +27,5 @@ default = []
 iroh_local = ["dep:iroh"]
 # Alpha-4: iroh_pilot = iroh_local + iroh test-utils (Builder::path_selection(PathSelection::RelayOnly)).
 iroh_pilot = ["iroh_local", "iroh/test-utils"]
-# docs/ALPHA4_PILOT.md names the packaged build `--features pilot`; alias until the doc locks one name.
-pilot = ["iroh_pilot"]
 # Alpha-4 on-box lane only (dev relay URL, TEST-NET egress); never in the pilot package.
 a4_local = ["stream-proto/a4_local"]

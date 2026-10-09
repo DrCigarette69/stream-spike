@@ -1,17 +1,17 @@
 # Stream Spike — Rust workspace (Alpha-2)
 
-Workspace members: `stream-proto`, `stream-peer`, `stream-gateway`.
+Workspace members: `stream-proto`, `stream-peer`, `stream-gateway`, `stream-relay` (A4.2; compiles nothing iroh by default).
 
 - **MSRV:** rustc 1.85
 - **Pinned deps:** axum 0.7.9, encoding_rs 0.8.35, idna_adapter 1.2.0, icu_* 1.5  
   If `Cargo.lock` is missing: `cd rust && ./pin-msrv-deps.sh` (or `./restore_cargo_lock.sh`), then commit the lock.
 - **Alpha-3 iroh (opt-in):** workspace dep `iroh = "=0.95.1"` (`default-features = false`), optional only.
   Features: `stream-gateway/iroh`, `stream-peer/iroh_local`. The default build does not compile iroh.
-  Alpha-4 (lock only, no behavior yet): `iroh_pilot` = gateway `iroh` / peer `iroh_local` + `iroh/test-utils`
+  Alpha-4: `iroh_pilot` = gateway `iroh` / peer `iroh_local` + `iroh/test-utils`
   (needed for `Builder::path_selection(PathSelection::RelayOnly)`; compile check
-  `cargo test --locked -p stream-gateway --features iroh_pilot iroh_pilot_relay_only_reachable`). `pilot` is an alias
-  of `iroh_pilot` (ALPHA4_PILOT.md uses `--features pilot`). `a4_local` forwards to `stream-proto/a4_local` (on-box lane only).
-  `iroh-relay =0.95.1` (`server`) is a workspace dep for the A4.2 self-hosted relay; test-utils already pulls the same crate,
+  `cargo test --locked -p stream-gateway --features iroh_pilot iroh_pilot_relay_only_reachable`). `a4_local` forwards to `stream-proto/a4_local` (on-box lane only).
+  `iroh_pilot` also turns on `iroh/metrics` on the gateway (A4.2 relay-vs-UDP datagram counters; no new crates).
+  `iroh-relay =0.95.1` (`server`) backs `crates/stream-relay` (A4.2 relay, `--features server[,a4_local]`); test-utils already pulls the same crate,
   so its deps (clap, rcgen, tokio-rustls-acme, toml, …) are in the lock. Fresh resolves rely on
   `.cargo/config.toml` `incompatible-rust-versions = "fallback"` (e.g. keeps rcgen 0.14.7 / time 0.3.45 for rustc 1.85.1).
   RustCrypto rc pins required by iroh 0.95.1 (`ed25519-dalek 3.0.0-pre.1`), applied in `pin-msrv-deps.sh`:

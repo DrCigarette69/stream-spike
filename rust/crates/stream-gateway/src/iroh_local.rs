@@ -9,6 +9,10 @@
 //!   NDJSON HELLO; Gateway → HELLO_OK, then AUTH_TICKET per stream; OPEN/BYTES/CLOSE unchanged.
 //!   New rule: authenticated remote EndpointId != ticket `peer_endpoint_id` → AUTH_REJECT
 //!   `endpoint_mismatch` + close.
+//! - A4.2 `SPIKE_TRANSPORT=iroh_pilot` (`--features iroh_pilot`): same endpoint and framing, but
+//!   `RelayMode::Custom` with exactly our one relay (`SPIKE_IROH_RELAY_URL`, default
+//!   `SPIKE_RELAY_ALLOW_URL`, checked by `guard::check_relay_url_with`), `PathSelection::RelayOnly`,
+//!   discovery off. Tickets must carry that `relay_url`. Never skips relay cert verification.
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -53,6 +57,75 @@ pub struct IrohConfig {
     pub listen: SocketAddr,
     pub key_path: PathBuf,
     pub expect_id: Option<String>,
+    /// A4.2: Some = iroh_pilot (relay-only via exactly this relay).
+    pub pilot: Option<PilotRelay>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PilotRelay {
+    pub relay_url: iroh::RelayUrl,
+    pub allow: guard::RelayAllow,
+}
+
+/// Endpoint-wide datagram counters (magicsock metrics; live in iroh_pilot builds, where
+/// iroh-relay/server turns iroh-metrics on). `ConnectionType` stays `None` under RelayOnly in
+/// iroh 0.95.1 (addr_for_send returns early), so these counters are the path evidence.
+#[cfg(feature = "iroh_pilot")]
+pub fn path_counters(ep: &Endpoint) -> serde_json::Value {
+    let m = &ep.metrics().magicsock;
+    let udp_send = m.send_ipv4.get() + m.send_ipv6.get();
+    let udp_recv = m.recv_data_ipv4.get() + m.recv_data_ipv6.get();
+    let relay_send = m.send_relay.get();
+    let relay_recv = m.recv_data_relay.get();
+    let path = if udp_send + udp_recv > 0 {
+        "udp"
+    } else if relay_send + relay_recv > 0 {
+        "relay"
+    } else {
+        "none"
+    };
+    serde_json::json!({"path": path, "relay_send": relay_send, "relay_recv": relay_recv,
+                       "udp_send": udp_send, "udp_recv": udp_recv})
+}
+
+#[cfg(not(feature = "iroh_pilot"))]
+pub fn path_counters(_ep: &Endpoint) -> serde_json::Value {
+    serde_json::json!({"path": "unknown"})
+}
+
+static ENDPOINT: std::sync::OnceLock<Endpoint> = std::sync::OnceLock::new();
+
+/// For /health: counters of the running endpoint (None before bind).
+pub fn health_counters() -> Option<serde_json::Value> {
+    ENDPOINT.get().map(path_counters)
+}
+
+/// Set once at startup in iroh_pilot mode; tickets are re-checked against it.
+static PILOT_ALLOW: std::sync::OnceLock<guard::RelayAllow> = std::sync::OnceLock::new();
+
+/// A4.2 pilot relay config, all guard checks before anything binds.
+pub fn pilot_relay_from_env() -> Result<PilotRelay, String> {
+    let lane = guard::Lane::build();
+    let allow = guard::relay_allow_from_env(lane)
+        .map_err(|e| format!("{} (SPIKE_RELAY_ALLOW_URL, lane={lane:?})", e.log_line()))?
+        .ok_or_else(|| {
+            "a4_refuse_relay_config:SPIKE_RELAY_ALLOW_URL unset (iroh_pilot needs our one self-hosted relay)".to_string()
+        })?;
+    let raw = env_nonempty("SPIKE_IROH_RELAY_URL").unwrap_or_else(|| allow.url());
+    guard::check_relay_url_with(Some(&raw), Some(&allow))
+        .map_err(|e| format!("{} (SPIKE_IROH_RELAY_URL must equal SPIKE_RELAY_ALLOW_URL)", e.log_line()))?;
+    match env_nonempty("SPIKE_IROH_PATH_SELECTION").map(|v| v.to_ascii_lowercase()) {
+        None => {}
+        Some(v) if v == "relay_only" => {}
+        Some(v) => {
+            return Err(format!(
+                "a4_refuse_relay_config:SPIKE_IROH_PATH_SELECTION={v} (iroh_pilot is relay_only, no direct paths)"
+            ))
+        }
+    }
+    let relay_url = iroh::RelayUrl::from_str(&allow.url())
+        .map_err(|e| format!("a4_refuse_relay_config:{raw} ({e})"))?;
+    Ok(PilotRelay { relay_url, allow })
 }
 
 fn env_nonempty(k: &str) -> Option<String> {
@@ -64,14 +137,20 @@ fn truthy(v: &str) -> bool {
 }
 
 /// Env → config, all guard checks up front (refuse before anything binds).
-pub fn config_from_env() -> Result<IrohConfig, String> {
+/// `pilot` = A4.2 iroh_pilot (relay-only); otherwise A3 iroh_local (relays refused).
+pub fn config_from_env(pilot: bool) -> Result<IrohConfig, String> {
     let raw = env_nonempty("SPIKE_IROH_LISTEN").unwrap_or_else(|| DEFAULT_LISTEN.into());
     let listen: SocketAddr = raw
         .parse()
         .map_err(|_| format!("a3_refuse_bad_addr:{raw} (SPIKE_IROH_LISTEN must be ip:port)"))?;
     guard::check_ip(listen.ip()).map_err(|e| format!("{} (SPIKE_IROH_LISTEN)", e.log_line()))?;
-    guard::check_relay_url(env_nonempty("SPIKE_IROH_RELAY_URL").as_deref())
-        .map_err(|e| format!("{} (SPIKE_IROH_RELAY_URL; Alpha-3 runs with relays disabled)", e.log_line()))?;
+    let pilot = if pilot {
+        Some(pilot_relay_from_env()?)
+    } else {
+        guard::check_relay_url(env_nonempty("SPIKE_IROH_RELAY_URL").as_deref())
+            .map_err(|e| format!("{} (SPIKE_IROH_RELAY_URL; Alpha-3 runs with relays disabled)", e.log_line()))?;
+        None
+    };
     guard::check_discovery(env_nonempty("SPIKE_IROH_DISCOVERY").map(|v| truthy(&v)).unwrap_or(false))
         .map_err(|e| format!("{} (SPIKE_IROH_DISCOVERY)", e.log_line()))?;
     let key_path = env_nonempty("SPIKE_GATEWAY_KEY_PATH")
@@ -81,6 +160,7 @@ pub fn config_from_env() -> Result<IrohConfig, String> {
         listen,
         key_path,
         expect_id: env_nonempty("SPIKE_GATEWAY_ENDPOINT_ID"),
+        pilot,
     })
 }
 
@@ -133,7 +213,18 @@ pub async fn bind(cfg: &IrohConfig) -> Result<Endpoint, String> {
             .try_into()
             .map_err(|e| format!("idle timeout: {e}"))?,
     ));
-    let ep = Endpoint::empty_builder(RelayMode::Disabled)
+    let relay_mode = match &cfg.pilot {
+        None => RelayMode::Disabled,
+        // QUIC address discovery off (quic: None): relay-only never needs our public UDP addr,
+        // and it would send UDP probes to the relay's QAD port.
+        Some(p) => RelayMode::Custom(iroh::RelayMap::from(iroh::RelayConfig { url: p.relay_url.clone(), quic: None })),
+    };
+    let builder = Endpoint::empty_builder(relay_mode);
+    let builder = match &cfg.pilot {
+        None => builder,
+        Some(p) => pilot_builder(builder, p)?,
+    };
+    let ep = builder
         .transport_config(tc)
         .clear_discovery()
         .secret_key(key)
@@ -157,7 +248,36 @@ pub async fn bind(cfg: &IrohConfig) -> Result<Endpoint, String> {
             cfg.listen, bound
         ));
     }
+    if let Some(p) = &cfg.pilot {
+        let wait = env_nonempty("SPIKE_IROH_RELAY_WAIT_MS")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(10_000)
+            .clamp(500, 60_000);
+        // Fail closed: no home relay connection → refuse to start (there is no direct fallback).
+        if tokio::time::timeout(std::time::Duration::from_millis(wait), ep.online()).await.is_err() {
+            ep.close().await;
+            return Err(format!("a4_refuse_relay_unreachable:{} (no home relay within {wait} ms)", p.relay_url));
+        }
+        let home = ep.addr().relay_urls().map(|u| u.to_string()).collect::<Vec<_>>();
+        if home != [p.relay_url.to_string()] {
+            ep.close().await;
+            return Err(format!("a4_refuse_relay_refused:{home:?} (home relay != {})", p.relay_url));
+        }
+        let _ = PILOT_ALLOW.set(p.allow.clone());
+    }
     Ok(ep)
+}
+
+/// A4.2: relay-only path selection (iroh test-utils API, hence the `iroh_pilot` feature).
+/// Deliberately never calls `insecure_skip_relay_cert_verify` (grep-checked by a42).
+#[cfg(feature = "iroh_pilot")]
+fn pilot_builder(b: iroh::endpoint::Builder, _p: &PilotRelay) -> Result<iroh::endpoint::Builder, String> {
+    Ok(b.path_selection(iroh::endpoint::PathSelection::RelayOnly))
+}
+
+#[cfg(not(feature = "iroh_pilot"))]
+fn pilot_builder(_b: iroh::endpoint::Builder, _p: &PilotRelay) -> Result<iroh::endpoint::Builder, String> {
+    Err("iroh_pilot needs --features iroh_pilot (PathSelection::RelayOnly); refusing".into())
 }
 
 /// The address Peers should put in `direct_addrs` (listen ip + actually bound port).
@@ -176,14 +296,17 @@ pub fn advertised_addr(ep: &Endpoint, cfg: &IrohConfig) -> SocketAddr {
 
 pub async fn run_accept(st: AppState, ep: Endpoint) {
     tracing::info!(
-        "iroh_local endpoint {} listening on {:?} alpn={ALPN} relay=disabled discovery=off",
+        "iroh endpoint {} listening on {:?} alpn={ALPN} relay={} discovery=off",
         ep.id(),
-        ep.bound_sockets()
+        ep.bound_sockets(),
+        st.relay_url.as_deref().map(|u| format!("{u} (relay_only)")).unwrap_or_else(|| "disabled".into())
     );
+    let _ = ENDPOINT.set(ep.clone());
     while let Some(incoming) = ep.accept().await {
         let st2 = st.clone();
+        let ep2 = ep.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_incoming(st2, incoming).await {
+            if let Err(e) = handle_incoming(st2, ep2, incoming).await {
                 tracing::info!("iroh_local conn error: {e}");
             }
         });
@@ -193,6 +316,7 @@ pub async fn run_accept(st: AppState, ep: Endpoint) {
 
 async fn handle_incoming(
     st: AppState,
+    ep: Endpoint,
     incoming: iroh::endpoint::Incoming,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = incoming.await?;
@@ -209,7 +333,9 @@ async fn handle_incoming(
             return Ok(());
         }
     };
-    tracing::info!("iroh_local peer connected remote={remote}");
+    let path = path_counters(&ep);
+    tracing::info!("iroh peer connected remote={remote} path={path}");
+    println!("IROH_PEER_CONNECTED remote={remote} path={path}");
     let pc = PeerConn::Iroh(IrohStream { conn, send, recv });
     crate::relay::handle_peer_conn(st, pc, Some(remote.to_string())).await
 }
@@ -232,11 +358,32 @@ pub fn check_ticket_binding(auth_id: &str, ticket_json: &str) -> Result<(), &'st
     let Ok(auth) = EndpointId::from_str(auth_id) else {
         return Err(REASON_ENDPOINT_MISMATCH);
     };
-    if ticket_id == auth {
-        Ok(())
-    } else {
-        Err(REASON_ENDPOINT_MISMATCH)
+    if ticket_id != auth {
+        return Err(REASON_ENDPOINT_MISMATCH);
     }
+    match PILOT_ALLOW.get() {
+        None => Ok(()),
+        Some(allow) => check_pilot_ticket(&v, allow),
+    }
+}
+
+/// A4.2: iroh_pilot tickets must name our relay (`relay_url`); any `direct_addrs` still pass A3.0.
+pub fn check_pilot_ticket(v: &serde_json::Value, allow: &guard::RelayAllow) -> Result<(), &'static str> {
+    let pl = v.get("payload").unwrap_or(v);
+    let relay = pl.get("relay_url").and_then(|x| x.as_str());
+    let addrs: Vec<String> = pl
+        .get("direct_addrs")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if relay.map(|r| r.trim().is_empty()).unwrap_or(true) {
+        return Err(guard::REASON_RELAY_REQUIRED);
+    }
+    guard::check_relay_url_with(relay, Some(allow)).map_err(|e| e.reason())?;
+    for a in &addrs {
+        guard::check_direct_addr(a).map_err(|e| e.reason())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -245,6 +392,27 @@ mod tests {
 
     fn id(seed: u8) -> String {
         SecretKey::from_bytes(&[seed; 32]).public().to_string()
+    }
+
+    #[test]
+    fn pilot_ticket_needs_our_relay() {
+        let lane = stream_proto::guard::Lane::Local;
+        let allow = guard::RelayAllow::parse("http://10.73.0.254:3340/", lane).unwrap();
+        let t = |relay: serde_json::Value, addrs: serde_json::Value| {
+            serde_json::json!({"payload": {"relay_url": relay, "direct_addrs": addrs}})
+        };
+        let e = serde_json::json!([]);
+        assert_eq!(check_pilot_ticket(&t("http://10.73.0.254:3340/".into(), e.clone()), &allow), Ok(()));
+        assert_eq!(check_pilot_ticket(&t("http://10.73.0.254:3340".into(), e.clone()), &allow), Ok(()));
+        assert_eq!(check_pilot_ticket(&t(serde_json::Value::Null, e.clone()), &allow), Err("relay_required"));
+        assert_eq!(check_pilot_ticket(&t("".into(), e.clone()), &allow), Err("relay_required"));
+        for bad in ["http://10.73.0.254:3341/", "https://10.73.0.254:3340/", "https://use1-1.relay.n0.iroh.iroh.link./"] {
+            assert_eq!(check_pilot_ticket(&t(bad.into(), e.clone()), &allow), Err("relay_refused"), "{bad}");
+        }
+        assert_eq!(
+            check_pilot_ticket(&t("http://10.73.0.254:3340/".into(), serde_json::json!(["8.8.8.8:9102"])), &allow),
+            Err("public_addr")
+        );
     }
 
     /// A4 lock: `iroh_pilot` (iroh/test-utils) makes RelayOnly path selection reachable.
@@ -279,7 +447,7 @@ mod tests {
             ("8.8.8.8:9102", "a3_refuse_non_private:8.8.8.8"),
         ] {
             std::env::set_var("SPIKE_IROH_LISTEN", v);
-            let r = config_from_env();
+            let r = config_from_env(false);
             std::env::remove_var("SPIKE_IROH_LISTEN");
             let e = r.unwrap_err();
             assert!(e.contains(want), "{v}: {e}");

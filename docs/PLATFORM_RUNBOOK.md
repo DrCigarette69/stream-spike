@@ -311,3 +311,41 @@ SPIKE_PORT_BASE=27300 SPIKE_IMPL=rust ./scripts/compose_health.sh # → A2.4_COM
 ```
 
 The compose project is still named after the checkout dir. Set `COMPOSE_PROJECT_NAME` to run a second stack from the same checkout.
+
+## A4.2 Self-hosted relay (`SPIKE_TRANSPORT=iroh_pilot`, TOM-19)
+
+Our own iroh relay, built from the pinned lock; Peer and Gateway reach each other **only** through it.
+
+**Relay binary** — `rust/crates/stream-relay` (iroh-relay 0.95.1 `server`; not in the default build):
+
+```bash
+cd rust && cargo build --locked -p stream-relay --features server,a4_local   # on-box lane build
+STREAM_RELAY_MODE=dev STREAM_RELAY_HTTP_BIND=10.73.0.254:3340 ./target/debug/stream-relay
+# -> STREAM_RELAY_READY url=http://10.73.0.254:3340/ ... quic=off mode=dev access=everyone
+```
+
+- `dev` = plain http, only in `a4_local` builds and only on `10.73.0.254:<port>` (the URL the guard's Local lane accepts). A pilot build refuses `dev`.
+- QUIC address discovery and the metrics listener are always off.
+- `STREAM_RELAY_ALLOW_ENDPOINTS=<id>,<id>` restricts who may use the relay (iroh `AccessConfig::Restricted`); required in `tls` mode.
+- Never binds `0.0.0.0`/`[::]`.
+
+**Gateway** (`--features iroh_pilot[,a4_local]`), `SPIKE_TRANSPORT=iroh_pilot`:
+
+| Env | Meaning |
+|-----|---------|
+| `SPIKE_RELAY_ALLOW_URL` | required; our one relay (`guard::RelayAllow::parse`, lane from the build). Unset / n0 host / non-public IP → `a4_refuse_relay_config` |
+| `SPIKE_IROH_RELAY_URL` | optional, defaults to the allow URL; anything else (n0, other port/host/scheme) → `a3_refuse_relay_refused` |
+| `SPIKE_IROH_PATH_SELECTION` | unset or `relay_only`; anything else refused |
+| `SPIKE_IROH_LISTEN` | still the A3.0-guarded local bind (UDP socket exists but no direct path is used) |
+| `SPIKE_IROH_RELAY_WAIT_MS` | wait for the home relay at start (default 10000); no relay → `a4_refuse_relay_unreachable`, exit 2 |
+
+Endpoint: `RelayMode::Custom(<allow URL>, quic: None)`, `PathSelection::RelayOnly`, `clear_discovery()`. Nothing calls `insecure_skip_relay_cert_verify` (a42 greps for it). A build without `iroh_pilot` refuses `SPIKE_TRANSPORT=iroh_pilot`. `/health` adds `relay_url` and `iroh_path` (`relay_*` / `udp_*` datagram counters; `ConnectionType` stays `none` under RelayOnly in iroh 0.95.1, so the counters are the path evidence). Tickets must carry `relay_url` equal to the allow URL (`relay_required` / `relay_refused`); any `direct_addrs` still go through A3.0.
+
+**Control** (`SPIKE_TRANSPORT=iroh_pilot`): mints `relay_url` = `SPIKE_RELAY_ALLOW_URL` (canonical), `direct_addrs` = `SPIKE_IROH_GATEWAY_ADDR` (default empty = relay-only), plus the A3.3 endpoint binding. `SPIKE_A4_LANE=local` selects the Python guard's Local lane (on-box only).
+
+**Proof:** `python3 scripts/a42_self_relay_smoke.py` → **A4.2_SELF_RELAY_GREEN** (single instance via `/tmp/stream-spike-a42.lock`; netns `a42-gw` / `a42-relay` / `a42-peer` from `scripts/a42_netns_up.sh`, torn down by `a42_netns_down.sh`). The relay ns is the only one attached to both sides and has `ip_forward=0`, so Gateway (10.73.0.1) and Peer (10.73.0.200) have no route to each other; the smoke shows TCP/UDP to the other side is `Network is unreachable`, then relay-only connect, Control-minted ticket → AUTH_OK → OPEN with 0 UDP datagrams on both ends, n0/other relay refused, and relay down → live conn closed, new dial `RELAY_UNREACHABLE`, Gateway start refused.
+
+**VPS deploy (TODO, pending Jeff — ALPHA4_PILOT open question 1):** nothing is deployed.
+- Needs: host (small VPS), a hostname we own, DNS A/AAAA record, firewall allowing 80 (ACME / captive portal) + 443 (relay) only; Gateway client/admin listeners stay on localhost (SSH tunnel).
+- `tls` hook (validated now, then refused with `relay_tls_todo` until the deploy slice): `STREAM_RELAY_MODE=tls`, `STREAM_RELAY_HOSTNAME`, `STREAM_RELAY_HTTPS_BIND=<public-ip>:443`, `STREAM_RELAY_HTTP_BIND=<public-ip>:80`, `STREAM_RELAY_TLS_CERT` / `STREAM_RELAY_TLS_KEY` (Let's Encrypt via certbot, or iroh-relay's built-in ACME), `STREAM_RELAY_ALLOW_ENDPOINTS` (Gateway + Jeff's two devices).
+- Clients then use `SPIKE_RELAY_ALLOW_URL=https://<hostname>/` from pilot builds (no `a4_local`); certs are always verified.

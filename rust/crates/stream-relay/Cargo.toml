@@ -1,0 +1,24 @@
+[package]
+name = "stream-relay"
+version = "0.1.0"
+edition = "2021"
+description = "A4.2 self-hosted iroh relay (iroh-relay 0.95.1 server) for Stream iroh_pilot"
+
+[[bin]]
+name = "stream-relay"
+path = "src/main.rs"
+required-features = ["server"]
+
+[dependencies]
+stream-proto = { path = "../stream-proto" }
+iroh-relay = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"], optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# Not in the default build: `cargo build --locked -p stream-relay --features server[,a4_local]`.
+default = []
+server = ["dep:iroh-relay", "dep:tokio"]
+# On-box lane only: allows plain-http dev mode, and only on 10.73.0.254. Never for the VPS build.
+a4_local = ["stream-proto/a4_local"]
