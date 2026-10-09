@@ -94,4 +94,4 @@ Community/n0 relays, public discovery, public listen or egress, NAT traversal, m
 
 Grok Bot re-ran `SPIKE_A3=1 SPIKE_PORT_BASE=24000 ./scripts/demo_alpha.sh` on main `a5ea565` (code at `dc5b0e5`, plus a docs-only commit on top) with no a34 running and no netns present. Exit 0. Markers: SPIKE_DOD_GREEN, A1.1_IROH_LOOPBACK_GREEN, PEER_ALPHA1_CLI_GREEN, A1.3_MOCK_TOPUP_GREEN, A3.0_PRIVATE_GUARD_GREEN, A3.1_GATEWAY_ENDPOINT_GREEN, A3.2_PEER_DIAL_GREEN, A3.3_TICKET_BIND_GREEN, A3.4_MULTINODE_GREEN, **A3_IROH_LOCAL_GREEN**. No netns left behind. Epic TOM-12 closed; A3.6 (TOM-19, self-hosted relay) stays parked.
 
-Known gap: `control/Dockerfile` doesn't copy `spike_private_guard.py`, so compose Control refuses `iroh_local` tickets with `guard_unavailable` (Alpha-3 runs in host netns only).
+Control image: built from the repo root, so it includes `scripts/spike_private_guard.py` (single source) and mints `iroh_local` tickets in compose too. Proof: `python3 scripts/a40_compose_guard_smoke.py` → `A4.0_COMPOSE_GUARD_GREEN`.

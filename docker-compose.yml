@@ -1,21 +1,32 @@
 # Stream spike — local harness. Alpha-0 A0.4: host health on 8080/1080/9200.
+# Ports/URLs: explicit env wins, else scripts/spike_ports.py (SPIKE_PORT_BASE) via
+# scripts/compose_health.sh; unset == the legacy defaults below.
 # network_mode: host — box Docker bridge/internal nets drop inter-container TCP
 # and block published Ports={}. Host mode keeps localhost-only binds (no public expose).
 
 services:
   control:
-    build: ./control
+    # Context = repo root so the image gets the single-source A3.0 guard
+    # (scripts/spike_private_guard.py) next to Control; control/Dockerfile.dockerignore
+    # limits the context to control/ + that one file.
+    build:
+      context: .
+      dockerfile: control/Dockerfile
     network_mode: host
     environment:
       SPIKE_DB: /data/spike.sqlite
       SPIKE_TICKET_SECRET: dev-only-change-me
-      SPIKE_LISTEN: 127.0.0.1:8080
+      SPIKE_LISTEN: ${SPIKE_LISTEN:-127.0.0.1:8080}
       SPIKE_DENYLIST: /fixtures/denylist.seed.json
+      # A4.0: iroh_local minting in the container (default fake_relay == old behaviour)
+      SPIKE_TRANSPORT: ${SPIKE_TRANSPORT:-fake_relay}
+      SPIKE_IROH_GATEWAY_ADDR: ${SPIKE_IROH_GATEWAY_ADDR:-127.0.0.1:9102}
+      SPIKE_GATEWAY_ENDPOINT_ID: ${SPIKE_GATEWAY_ENDPOINT_ID:-}
     volumes:
       - control-data:/data
       - ./fixtures:/fixtures:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('${CONTROL_URL:-http://127.0.0.1:8080}/health')"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -25,15 +36,15 @@ services:
     build: ./gateway
     network_mode: host
     environment:
-      CONTROL_URL: http://127.0.0.1:8080
+      CONTROL_URL: ${CONTROL_URL:-http://127.0.0.1:8080}
       SPIKE_TRANSPORT: fake_relay   # fake_relay | iroh (iroh later)
-      SPIKE_LISTEN_PROXY: 127.0.0.1:1080
-      SPIKE_FAKE_RELAY: 127.0.0.1:9100
+      SPIKE_LISTEN_PROXY: ${SPIKE_LISTEN_PROXY:-127.0.0.1:1080}
+      SPIKE_FAKE_RELAY: ${SPIKE_FAKE_RELAY:-127.0.0.1:9100}
     depends_on:
       control:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:1080/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('${GATEWAY_PROXY:-http://127.0.0.1:1080}/health')"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -43,12 +54,12 @@ services:
     build: ./peer
     network_mode: host
     environment:
-      CONTROL_URL: http://127.0.0.1:8080
+      CONTROL_URL: ${CONTROL_URL:-http://127.0.0.1:8080}
       SPIKE_TRANSPORT: fake_relay
-      SPIKE_FAKE_RELAY_DIAL: 127.0.0.1:9100
+      SPIKE_FAKE_RELAY_DIAL: ${SPIKE_FAKE_RELAY_DIAL:-127.0.0.1:9100}
       SPIKE_ISP_ACK_VERSION: "v1"  # empty = fail closed; gate-peer-ack clears via /peer/ack
       SPIKE_HOST_TIER: casual
-      SPIKE_PEER_ADMIN: 127.0.0.1:9200
+      SPIKE_PEER_ADMIN: ${SPIKE_PEER_ADMIN:-127.0.0.1:9200}
       SPIKE_PEER_ID: peer_demo
       SPIKE_ENDPOINT_ID: iroh_ep_demo_001
     depends_on:
@@ -57,7 +68,7 @@ services:
       gateway:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('${PEER_ADMIN:-http://127.0.0.1:9200}/health')"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -67,8 +78,8 @@ services:
     build: ./client-cli
     network_mode: host
     environment:
-      CONTROL_URL: http://127.0.0.1:8080
-      GATEWAY_PROXY: 127.0.0.1:1080
+      CONTROL_URL: ${CONTROL_URL:-http://127.0.0.1:8080}
+      GATEWAY_PROXY: ${GATEWAY_PROXY:-127.0.0.1:1080}
       FIXTURES: /fixtures
     volumes:
       - ./fixtures:/fixtures:ro

@@ -243,7 +243,7 @@ With `SPIKE_TRANSPORT=iroh_local` in Control's env, `POST /v1/sessions` mints:
 - **Verify:** in this mode `/v1/tickets/verify` also re-checks `peer_endpoint_id` form and the guarded `direct_addrs`. The Gateway then checks the authenticated remote id against `peer_endpoint_id` (`endpoint_mismatch`, see A3.1).
 - **Signing is unchanged:** HMAC-SHA256 over the sorted, compact JSON of `payload`, so the Rust Gateway → Control verify path works as-is.
 - **Other transports are unchanged:** no `direct_addrs`, and `gateway_endpoint_id` still defaults to `iroh_ep_gateway_spike`.
-- **Docker image:** `control/Dockerfile` copies only `control/`, so `spike_private_guard` isn't in the image. In `iroh_local` mode Control then fails closed with `guard_unavailable`. A3 runs Control on the host netns path, not compose.
+- **Docker image:** compose builds Control from the repo root (`control/Dockerfile`). `control/Dockerfile.dockerignore` keeps the build context to `control/` plus `scripts/spike_private_guard.py`, which is copied next to `main.py`. One source file, no duplicated guard logic. If the module is ever missing, Control still fails closed with `guard_unavailable`. `docker build control/` alone no longer works; use `docker compose build control` or `docker build -f control/Dockerfile .`. Proof: `python3 scripts/a40_compose_guard_smoke.py` → `A4.0_COMPOSE_GUARD_GREEN`.
 
 Proof (sudo; reuses the A3.1 netns harness, all tickets minted by Control):
 
@@ -295,3 +295,19 @@ python3 scripts/a34_multinode_smoke.py   # up → run → down → A3.4_MULTINOD
   - When an iroh Peer's connection ends (drop, `endpoint_mismatch`, idle timeout), the Gateway calls Control `POST /v1/peers/offline {peer_id, endpoint_id, reason}`. It skips the call when a newer connection replaced the entry. Control sets `online=0` only if `endpoint_id` still matches, and emits `peer.offline`.
   - Control matching: lowest `load` first; ties go to the least recently matched Peer (in-memory). With one online Peer this behaves as before.
 - No `dummy` link type on this box. `veth` and `bridge` work.
+
+## Compose ports (`compose_health.sh`)
+
+`scripts/compose_health.sh` resolves ports with `scripts/spike_ports.py`, the same precedence as the local asserts:
+1. explicit env (`SPIKE_LISTEN`, `CONTROL_URL`, `SPIKE_LISTEN_PROXY`, `GATEWAY_PROXY`, `SPIKE_FAKE_RELAY[_DIAL]`, `SPIKE_PEER_ADMIN`, `PEER_ADMIN`)
+2. `SPIKE_PORT_BASE` (control +0, gateway +1, relay +2, peer +4)
+3. the legacy 8080/1080/9100/9200
+
+It passes these through `sudo env … docker compose`. `docker-compose.yml` / `docker-compose.rust.yml` interpolate them, healthchecks included, with the old values as defaults. Binds stay `127.0.0.1` (host networking).
+
+```bash
+SPIKE_PORT_BASE=27300 ./scripts/compose_health.sh                 # → A0.4_COMPOSE_GREEN on 27300/27301/27304
+SPIKE_PORT_BASE=27300 SPIKE_IMPL=rust ./scripts/compose_health.sh # → A2.4_COMPOSE_GREEN
+```
+
+The compose project is still named after the checkout dir. Set `COMPOSE_PROJECT_NAME` to run a second stack from the same checkout.

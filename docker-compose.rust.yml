@@ -13,7 +13,7 @@ services:
         RUST_VERSION: "1.85"
     image: stream-spike-gateway:rust
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:1080/health"]
+      test: ["CMD", "curl", "-sf", "${GATEWAY_PROXY:-http://127.0.0.1:1080}/health"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -27,7 +27,7 @@ services:
         RUST_VERSION: "1.85"
     image: stream-spike-peer:rust
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9200/health"]
+      test: ["CMD", "curl", "-sf", "${PEER_ADMIN:-http://127.0.0.1:9200}/health"]
       interval: 5s
       timeout: 3s
       retries: 12

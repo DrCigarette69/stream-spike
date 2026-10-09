@@ -1,0 +1,6 @@
+# BuildKit per-Dockerfile ignore (context = repo root): keep it to Control + the guard.
+*
+!control/
+control/__pycache__/
+control/*.sqlite
+!scripts/spike_private_guard.py
