@@ -29,7 +29,7 @@ Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` defau
 
 - **Toolchain:** stay on rustc 1.85.1 + `iroh =0.95.1` as long as a `--locked` build passes; if it stops passing, a Rust bump becomes its own slice **A3.R** (toolchain + Dockerfile `RUST_VERSION`) ahead of A3.1.
 - **Gateway endpoint ID:** fixed dev key for Alpha-3; Control-issued IDs come later.
-- **Ticket field format:** Platform Engineer picks it in A3.3.
+- **Ticket field format:** set by Platform Engineer, see *A3.3 ticket format* below.
 - **Probe (Stream Architect, 2026-10-08):** PASS — `iroh =0.95.1` (`default-features = false`) builds `--locked` on 1.85.1 and an `empty_builder(RelayMode::Disabled)` endpoint binds `127.0.0.1:0` and starts in a netns with no default route, **only with pins** `ed25519 3.0.0-rc.2`, `pkcs8 0.11.0-rc.8`, `spki 0.8.0-rc.4`, `der 0.8.0-rc.10` (fresh resolve pulls the final 3.0.0/0.11.0/0.8.x, which break `ed25519-dalek 3.0.0-pre.1`); add them to `rust/pin-msrv-deps.sh` when A3.1 adds the `iroh` feature.
 
 ## Slices & owners
@@ -45,6 +45,21 @@ Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` defau
 | A3.6 Local iroh-relay (optional) | Platform Engineer | Self-hosted `iroh-relay` dev mode on `10.73.0.254` only; used solely if direct path is flaky | **A3.6_LOCAL_RELAY_GREEN** |
 | A3.7 Verify + Linear | Grok Bot | File A3.x issues once locked; re-verify on tip | — |
 | Copy | Stream Designer | **None expected** — transport is invisible; same screens/greps | — |
+
+### A3.3 ticket format (Platform Engineer, 2026-10-08)
+
+The existing `AUTH_TICKET` fields stay unchanged. `iroh_local` adds three:
+
+| Field | Type | Rule |
+|-------|------|------|
+| `peer_endpoint_id` | string | iroh `EndpointId` in its canonical `Display` form; must round-trip through `FromStr` to the same ID |
+| `gateway_endpoint_id` | string | same encoding; the fixed dev key for Alpha-3 |
+| `direct_addrs` | list of `"ip:port"` | every entry must pass the A3.0 private-address guard; one public entry fails the whole ticket |
+
+- **Control** refuses to issue a ticket when the Peer's endpoint ID is missing or does not parse, with reason `endpoint_bind_required`. `SPIKE_IROH_GATEWAY_ADDR` overrides `direct_addrs`, but it still goes through the guard.
+- **Gateway** compares the authenticated remote `EndpointId` of the connection with `peer_endpoint_id`. A mismatch gets `AUTH_REJECT` with reason `endpoint_mismatch`, and the connection closes.
+- **Peer** (A3.2) checks `gateway_endpoint_id` and `direct_addrs` the same way on its side before it dials.
+- A3.3_TICKET_BIND_GREEN needs to show: a good bind is accepted, a missing ID gets `endpoint_bind_required`, a mismatched ID gets `endpoint_mismatch`, and a public `direct_addrs` entry is refused.
 
 ## Run (target)
 
@@ -64,7 +79,7 @@ Done = A3.0–A3.5 green on one tip, existing five greens unchanged, A3.6 option
 1. **iroh vs rustc 1.85.1.** `iroh` 1.x and 0.96+ need rustc ≥1.89/1.91; **0.95.1 is the last on 1.85**. Pin `iroh =0.95.1` (stale API) **or** bump toolchain + Dockerfile `RUST_VERSION` (touches the A2 lock pin). Proposal: pin 0.95.1 for A3, bump in A4.
 2. **Default builder phones home.** iroh's default builder uses n0 relays, DNS/pkarr discovery and portmapper/net-report probes. Must use the empty builder with `RelayMode::Disabled`, discovery off (`clear_discovery()`), `default-features = false`. Portmapper is a hard dependency in 0.95.1 with no off switch, so the no-default-route netns is the **required** guard, not just a backstop; A3.4 must keep every node in one.
 3. **Network substrate.** `docker-compose.yml` notes the box's Docker bridge drops inter-container TCP (hence `network_mode: host`). UDP/QUIC over bridge is unproven, so `ip netns` (needs `sudo`, works on this box) is primary; compose multi-node is stretch.
-4. **Ticket ↔ endpoint ID binding.** Ticket field name/format in `stream-proto` and whether the Gateway endpoint ID is static (dev key file) or Control-issued per session.
+4. **Ticket ↔ endpoint ID binding.** Resolved for Alpha-3: format in *A3.3 ticket format*; Gateway ID is a static dev key, Control-issued IDs later.
 5. **Not simulated:** NAT, hole-punching, packet loss, real relays, WAN. A3 says nothing about real-world reachability.
 6. **Build weight.** `iroh` adds a large dep tree / build time; keep it behind cargo feature `iroh` so A2 builds stay fast and `--locked` keeps working.
 
