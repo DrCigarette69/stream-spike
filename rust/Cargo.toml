@@ -5,3 +5,8 @@ members = [
   "crates/stream-peer",
   "crates/stream-gateway",
 ]
+
+[workspace.dependencies]
+# Alpha-3 (A3.1/A3.2): real iroh endpoint, opt-in only. default-features off;
+# relays/discovery are disabled in code. Needs RustCrypto rc pins (see pin-msrv-deps.sh).
+iroh = { version = "=0.95.1", default-features = false }

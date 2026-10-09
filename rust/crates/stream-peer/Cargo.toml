@@ -19,3 +19,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "=0.11.27", default-features = false, features = ["json", "rustls-tls"] }
 bytes = "1"
+iroh = { workspace = true, optional = true }
+
+[features]
+default = []
+# Alpha-3: opt-in real iroh endpoint (SPIKE_TRANSPORT=iroh_local). Not in default build.
+iroh_local = ["dep:iroh"]
