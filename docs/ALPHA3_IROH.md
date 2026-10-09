@@ -56,10 +56,10 @@ The existing `AUTH_TICKET` fields stay unchanged. `iroh_local` adds three:
 | `gateway_endpoint_id` | string | same encoding; the fixed dev key for Alpha-3 |
 | `direct_addrs` | list of `"ip:port"` | every entry must pass the A3.0 private-address guard; one public entry fails the whole ticket |
 
-- **Control** refuses to issue a ticket when the Peer's endpoint ID is missing or does not parse, with reason `endpoint_bind_required`. `SPIKE_IROH_GATEWAY_ADDR` overrides `direct_addrs`, but it still goes through the guard.
+- **Control** refuses to issue a ticket when the Peer's endpoint ID is missing or does not parse, with reason `endpoint_bind_required`. An empty `direct_addrs` list is refused with its own reason, `direct_addrs_required`. Guard failures pass the A3.0 reason through unchanged (`public_addr`, `allowlist_miss`, and so on). `SPIKE_IROH_GATEWAY_ADDR` overrides `direct_addrs`, but it still goes through the guard.
 - **Gateway** compares the authenticated remote `EndpointId` of the connection with `peer_endpoint_id`. A mismatch gets `AUTH_REJECT` with reason `endpoint_mismatch`, and the connection closes.
 - **Peer** (A3.2) checks `gateway_endpoint_id` and `direct_addrs` the same way on its side before it dials.
-- A3.3_TICKET_BIND_GREEN needs to show: a good bind is accepted, a missing ID gets `endpoint_bind_required`, a mismatched ID gets `endpoint_mismatch`, and a public `direct_addrs` entry is refused.
+- A3.3_TICKET_BIND_GREEN needs to show: a good bind is accepted, a missing ID gets `endpoint_bind_required`, an empty `direct_addrs` gets `direct_addrs_required`, a mismatched ID gets `endpoint_mismatch`, and a public `direct_addrs` entry is refused.
 
 ## Run (target)
 
