@@ -32,6 +32,9 @@ pub struct PeerState {
     pub ux_screen: Option<String>,
     /// When set, relay loop should drop the current socket (kill / clear-ack).
     pub force_disconnect: bool,
+    /// A3.2: P2 consent bundle accepted (set with an accepted ISP ack; enroll
+    /// accepts P1+P2 together). iroh_local refuses to dial without it.
+    pub p2_consent: bool,
 }
 
 impl PeerState {
@@ -51,6 +54,7 @@ impl PeerState {
             ux_status: String::new(),
             ux_screen: None,
             force_disconnect: false,
+            p2_consent: !ack.is_empty(),
         };
         if ack.is_empty() {
             let _ = st.set_ux(Some("P1"), ux::p1_user_facing());

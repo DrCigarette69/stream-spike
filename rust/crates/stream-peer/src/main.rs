@@ -4,6 +4,10 @@ mod admin;
 mod config;
 mod egress;
 mod frames;
+mod iroh_key;
+mod iroh_local;
+mod iroh_ticket;
+mod kill;
 mod relay;
 mod state;
 mod ticket;
@@ -38,11 +42,18 @@ async fn main() {
         .build()
         .expect("http client");
 
-    spawn_relay_loop(state.clone(), relay_handle.clone(), http.clone());
+    let transport_slot = kill::TransportSlot::default();
+    if config::is_iroh_local(&cfg.transport) {
+        // A3.2: real iroh dial (part 2) or a clean refusal; admin stays up.
+        iroh_local::spawn_iroh_local(state.clone(), transport_slot.clone());
+    } else {
+        spawn_relay_loop(state.clone(), relay_handle.clone(), http.clone());
+    }
 
     let app = admin::router(AppState {
         state: state.clone(),
         relay: relay_handle,
+        transport: transport_slot,
         http,
     });
 

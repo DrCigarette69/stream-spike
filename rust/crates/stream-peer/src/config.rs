@@ -13,6 +13,11 @@ pub struct Config {
     pub isp_ack_version: String,
     pub heartbeat_s: f64,
     pub alpn: &'static str,
+    /// A3.2: `SPIKE_IROH_KEY_PATH` (iroh_local only; read by part 2).
+    #[allow(dead_code)]
+    pub iroh_key_path: String,
+    /// A3.2: `SPIKE_GATEWAY_ENDPOINT_ID` -- ticket `gateway_endpoint_id` must match.
+    pub gateway_endpoint_id: String,
 }
 
 impl Config {
@@ -47,12 +52,24 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5.0),
             alpn: ALPN,
+            iroh_key_path: crate::iroh_key::key_path_from_env()
+                .to_string_lossy()
+                .into_owned(),
+            gateway_endpoint_id: std::env::var("SPIKE_GATEWAY_ENDPOINT_ID")
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
         }
     }
 }
 
 pub fn is_iroh_loopback(transport: &str) -> bool {
     matches!(transport, "iroh" | "iroh_loopback")
+}
+
+/// A3 real-iroh mode (Rust only, opt-in). Distinct from A1.1 `iroh_loopback`.
+pub fn is_iroh_local(transport: &str) -> bool {
+    transport == "iroh_local"
 }
 
 pub fn is_loopback_host(host: &str) -> bool {
@@ -88,6 +105,9 @@ mod tests {
         assert!(is_iroh_loopback("iroh"));
         assert!(is_iroh_loopback("iroh_loopback"));
         assert!(!is_iroh_loopback("fake_relay"));
+        assert!(!is_iroh_loopback("iroh_local"));
+        assert!(is_iroh_local("iroh_local"));
+        assert!(!is_iroh_local("iroh_loopback"));
         // guard used by relay: iroh + non-loopback => refuse
         let host = "8.8.8.8";
         assert!(is_iroh_loopback("iroh_loopback") && !is_loopback_host(host));

@@ -17,6 +17,8 @@ use serde_json::{json, Value};
 pub struct AppState {
     pub state: SharedState,
     pub relay: RelayHandle,
+    /// A3.2: active non-TCP transport (iroh_local); kill closes it <= 2 s.
+    pub transport: crate::kill::TransportSlot,
     pub http: reqwest::Client,
 }
 
@@ -104,6 +106,7 @@ async fn do_set_ack(app: &AppState, version: &str, understood: Option<bool>) -> 
     {
         let mut g = app.state.write().await;
         g.isp_ack_version = version.to_string();
+        g.p2_consent = !version.is_empty();
     }
     if version.is_empty() {
         relay::disconnect_now(&app.state, &app.relay).await;
@@ -145,7 +148,9 @@ async fn peer_kill(State(app): State<AppState>) -> Json<Value> {
     )
     .await;
     relay::disconnect_now(&app.state, &app.relay).await;
+    let _ = app.transport.kill("peer_kill").await;
     eprintln!("UX P4\n{}", ux::p4_user_facing());
+    crate::iroh_local::print_screen(crate::iroh_local::SCREEN_P4);
     eprintln!("peer kill switch fired");
     Json(app.state.read().await.snapshot())
 }

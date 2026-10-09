@@ -85,6 +85,16 @@ pub async fn verify_ticket(
             };
         }
     }
+    // A3.2: in iroh_local, gateway_endpoint_id + guarded direct_addrs before any dial.
+    if crate::config::is_iroh_local(&cfg.transport) {
+        if let Err(e) = crate::iroh_ticket::check_dial_target(&payload, &cfg.gateway_endpoint_id) {
+            return VerifyResult {
+                ok: false,
+                error: e,
+                payload,
+            };
+        }
+    }
     VerifyResult {
         ok: true,
         error: "ok".into(),
