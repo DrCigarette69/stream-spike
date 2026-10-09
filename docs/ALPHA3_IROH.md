@@ -25,6 +25,13 @@ Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` defau
 - Existing greens unchanged: **SPIKE_DOD_GREEN**, **A1.1_IROH_LOOPBACK_GREEN**, **PEER_ALPHA1_CLI_GREEN**, **A1.3_MOCK_TOPUP_GREEN**, **A2.4_COMPOSE_GREEN** (default and `SPIKE_IMPL=rust`).
 - Stubs / no live Stripe / `[Brand]` not `Stream` in UX. Small commits via `git` CLI.
 
+## Room defaults (2026-10-08)
+
+- **Toolchain:** stay on rustc 1.85.1 + `iroh =0.95.1` as long as a `--locked` build passes; if it stops passing, a Rust bump becomes its own slice **A3.R** (toolchain + Dockerfile `RUST_VERSION`) ahead of A3.1.
+- **Gateway endpoint ID:** fixed dev key for Alpha-3; Control-issued IDs come later.
+- **Ticket field format:** Platform Engineer picks it in A3.3.
+- **Probe (Stream Architect, 2026-10-08):** PASS — `iroh =0.95.1` (`default-features = false`) builds `--locked` on 1.85.1 and an `empty_builder(RelayMode::Disabled)` endpoint binds `127.0.0.1:0` and starts in a netns with no default route, **only with pins** `ed25519 3.0.0-rc.2`, `pkcs8 0.11.0-rc.8`, `spki 0.8.0-rc.4`, `der 0.8.0-rc.10` (fresh resolve pulls the final 3.0.0/0.11.0/0.8.x, which break `ed25519-dalek 3.0.0-pre.1`); add them to `rust/pin-msrv-deps.sh` when A3.1 adds the `iroh` feature.
+
 ## Slices & owners
 
 | Slice | Owner | Scope | Green |
@@ -34,7 +41,7 @@ Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` defau
 | A3.2 Peer dial | Peer Engineer | Persistent per-peer secret key; dial Gateway by endpoint ID + direct addrs; ISP ack/consent gate **before** dial; kill-switch closes conn ≤2 s; egress floor unchanged | **A3.2_PEER_DIAL_GREEN** |
 | A3.3 Control endpoint IDs / tickets | Platform Engineer | Python Control: Peer registers endpoint ID; `AUTH_TICKET` binds `endpoint_id`; hands Peer the Gateway endpoint ID + direct addrs (env override `SPIKE_IROH_GATEWAY_ADDR`) | **A3.3_TICKET_BIND_GREEN** (incl. mismatched ID refused) |
 | A3.4 Multi-node net | Platform Engineer | `scripts/a3_netns_up.sh` / `_down.sh`: `br-a3`, `ns-gw` `.1`, `ns-peer-a` `.11`, `ns-peer-b` `.12`; client session lands on each Peer; kill one → other still serves. Compose variant is stretch (see risks) | **A3.4_MULTINODE_GREEN** |
-| A3.5 Asserts + demo wiring | Stream Architect | `run_local_asserts.py a3` (A3.0–A3.4 + negatives: public IP dial, n0 relay URL, discovery on, all refused; `ip route` in each ns has no default); `demo_alpha.sh` adds A3 block only when `SPIKE_A3=1` | **A3_IROH_LOCAL_GREEN** |
+| A3.5 Asserts + demo wiring | Stream Architect | `run_local_asserts.py a3` (A3.0–A3.4 + negatives: public IP dial, n0 relay URL, discovery on, all refused; `ip route` in each ns has no default); in `iroh_local` mode the a3 path greps screen IDs `p1_isp_ack` + `p2_consent` **before** the dial and `p4_kill` on the kill-switch, so the `fixtures/screens.json` copy checks (incl. `forbidden_user_facing_substrings`) run unchanged; `demo_alpha.sh` adds A3 block only when `SPIKE_A3=1` | **A3_IROH_LOCAL_GREEN** |
 | A3.6 Local iroh-relay (optional) | Platform Engineer | Self-hosted `iroh-relay` dev mode on `10.73.0.254` only; used solely if direct path is flaky | **A3.6_LOCAL_RELAY_GREEN** |
 | A3.7 Verify + Linear | Grok Bot | File A3.x issues once locked; re-verify on tip | — |
 | Copy | Stream Designer | **None expected** — transport is invisible; same screens/greps | — |
