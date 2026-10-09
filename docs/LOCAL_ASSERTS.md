@@ -122,3 +122,19 @@ python3 scripts/run_local_asserts.py mock-topup
 ```
 
 See [`A1_3_COPY.md`](A1_3_COPY.md) · [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) §A1.3.
+
+## Alpha-3 private-address guard (A3.0)
+
+Shared guard for `iroh_local` (no iroh dependency, no stack, no network). Spec: [`ALPHA3_IROH.md`](ALPHA3_IROH.md).
+
+```bash
+python3 scripts/run_local_asserts.py a30            # → A3.0_PRIVATE_GUARD_GREEN (alias: private-guard)
+cd rust && cargo test -p stream-proto --locked guard # Rust table tests only
+python3 scripts/spike_private_guard.py              # Python mirror self-test only
+```
+
+- Rust: `rust/crates/stream-proto/src/guard.rs` (`stream_proto::guard`) — Peer/Gateway.
+- Python: `scripts/spike_private_guard.py` — Control (A3.3 `direct_addrs`).
+- Private = `127/8`, `10/8`, `172.16/12`, `192.168/16`, `::1`, `fd00::/8`; IPv4-mapped IPv6 judged as IPv4. `SPIKE_IROH_ALLOW_CIDRS` narrows (unset → `10.73.0.0/24,127.0.0.0/8`; empty → private ranges only).
+- Reasons: `public_addr`, `bad_addr`, `allowlist_miss`, `allowlist_config`, `relay_refused`, `discovery_refused`. Log line `a3_refuse_non_private:<addr>` for public/allowlist misses.
+- If `cargo` is missing the Rust half is skipped with a message, unless `SPIKE_IMPL=rust` (then it fails).

@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A3.0 private-address guard (Alpha-3 `iroh_local`), std only.
+pub mod guard;
+
 pub const ALPN: &str = "stream/tunnel/1";
 
 /// Hardening features advertised by Gateway `/health`.

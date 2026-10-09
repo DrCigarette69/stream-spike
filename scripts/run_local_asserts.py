@@ -140,6 +140,38 @@ def run_a13_mock_topup():
     print("PASS a13_mock_topup_smoke", flush=True)
 
 
+def run_a30_private_guard():
+    """A3.0 private-address guard: Rust stream-proto::guard tests + Python mirror self-test.
+    No stack, no network, no iroh dependency."""
+    import shutil
+
+    print("\n=== A3.0 private guard (rust stream-proto::guard) ===", flush=True)
+    impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        if impl == "rust":
+            raise SystemExit("FAIL a30: cargo not found but SPIKE_IMPL=rust")
+        print("SKIP a30 rust guard tests: cargo not found (SPIKE_IMPL!=rust)", flush=True)
+    else:
+        p = subprocess.run(
+            [cargo, "test", "-p", "stream-proto", "--locked", "guard"],
+            cwd=str(ROOT / "rust"),
+        )
+        if p.returncode != 0:
+            raise SystemExit("FAIL a30 rust guard tests")
+        print("PASS a30 rust guard tests", flush=True)
+
+    print("\n=== A3.0 private guard (python spike_private_guard self-test) ===", flush=True)
+    p = subprocess.run(
+        [sys.executable, "-u", str(ROOT / "scripts" / "spike_private_guard.py")],
+        cwd=str(ROOT),
+    )
+    if p.returncode != 0:
+        raise SystemExit("FAIL a30 python guard self-test")
+    print("PASS a30 python guard self-test", flush=True)
+    print("\nA3.0_PRIVATE_GUARD_GREEN", flush=True)
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     if mode in ("a11", "iroh-loopback", "iroh_loopback"):
@@ -150,6 +182,9 @@ def main():
         return 0
     if mode in ("a13", "mock-topup", "mock_topup"):
         run_a13_mock_topup()
+        return 0
+    if mode in ("a30", "private-guard", "private_guard"):
+        run_a30_private_guard()
         return 0
     env = start_stack()
     grace = ["grace-stop", "assert-grace-ledger"]
