@@ -13,7 +13,6 @@ use crate::kill::TransportSlot;
 use crate::state::SharedState;
 
 pub const FEATURE_NOT_BUILT: &str = "iroh_local_feature_not_built";
-pub const DIAL_NOT_IMPLEMENTED: &str = "iroh_local_dial_not_implemented";
 
 pub const SCREEN_P1: &str = "p1_isp_ack";
 pub const SCREEN_P2: &str = "p2_consent";
@@ -28,7 +27,6 @@ pub fn print_screen(id: &str) {
     eprintln!("{}", screen_line(id));
 }
 
-#[allow(unexpected_cfgs)]
 pub fn feature_built() -> bool {
     cfg!(feature = "iroh_local")
 }
@@ -62,17 +60,26 @@ pub fn startup_check() -> Result<(), &'static str> {
     if !feature_built() {
         return Err(FEATURE_NOT_BUILT);
     }
-    // Part 2 replaces this with the real endpoint + dial loop.
-    Err(DIAL_NOT_IMPLEMENTED)
+    Ok(())
 }
 
-pub fn spawn_iroh_local(state: SharedState, _slot: TransportSlot) {
+pub fn spawn_iroh_local(
+    state: SharedState,
+    slot: TransportSlot,
+    http: reqwest::Client,
+    handle: crate::state::RelayHandle,
+) {
     tokio::spawn(async move {
         if let Err(reason) = startup_check() {
             eprintln!("A3 iroh_local refused: {reason}");
             mark_offline(&state).await;
             set_error(&state, reason).await;
+            return;
         }
+        #[cfg(feature = "iroh_local")]
+        crate::iroh_dial::run(state, slot, http, handle).await;
+        #[cfg(not(feature = "iroh_local"))]
+        let _ = (slot, http, handle);
     });
 }
 

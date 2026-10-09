@@ -4,12 +4,12 @@ use crate::state::{RelayHandle, SharedState, StreamInfo};
 use crate::ticket::verify_ticket;
 use serde_json::{json, Value};
 use stream_proto::ALPN;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-pub(crate) async fn handle_auth_ticket(
+pub(crate) async fn handle_auth_ticket<W: AsyncWrite + Unpin>(
     state: &SharedState,
     http: &reqwest::Client,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    writer: &mut W,
     msg: &Value,
 ) {
     let frame_alpn = msg.get("alpn").and_then(|v| v.as_str());
@@ -85,8 +85,8 @@ pub(crate) async fn handle_auth_ticket(
     let _ = send_line(writer, &json!({"type":"AUTH_OK"})).await;
 }
 
-pub(crate) async fn send_line(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+pub(crate) async fn send_line<W: AsyncWrite + Unpin>(
+    writer: &mut W,
     obj: &Value,
 ) -> Result<(), std::io::Error> {
     let mut line = serde_json::to_vec(obj).unwrap_or_default();
@@ -96,8 +96,8 @@ pub(crate) async fn send_line(
     Ok(())
 }
 
-pub(crate) async fn read_line(
-    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+pub(crate) async fn read_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
 ) -> Result<Option<String>, String> {
     let mut buf = String::new();
     match reader.read_line(&mut buf).await {
@@ -108,10 +108,10 @@ pub(crate) async fn read_line(
 }
 
 
-pub(crate) async fn handle_tunnel_msg(
+pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
     state: &SharedState,
     http: &reqwest::Client,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    writer: &mut W,
     msg: &Value,
 ) -> bool {
     // returns true if relay loop should break

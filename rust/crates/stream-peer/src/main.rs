@@ -5,11 +5,14 @@ mod config;
 mod consent;
 mod egress;
 mod frames;
+#[cfg(feature = "iroh_local")]
+mod iroh_dial;
 mod iroh_key;
 mod iroh_local;
 mod iroh_ticket;
 mod kill;
 mod relay;
+mod session;
 mod state;
 mod ticket;
 mod ux;
@@ -53,7 +56,12 @@ async fn main() {
     let transport_slot = kill::TransportSlot::default();
     if config::is_iroh_local(&cfg.transport) {
         // A3.2: real iroh dial (part 2) or a clean refusal; admin stays up.
-        iroh_local::spawn_iroh_local(state.clone(), transport_slot.clone());
+        iroh_local::spawn_iroh_local(
+            state.clone(),
+            transport_slot.clone(),
+            http.clone(),
+            relay_handle.clone(),
+        );
     } else {
         spawn_relay_loop(state.clone(), relay_handle.clone(), http.clone());
     }

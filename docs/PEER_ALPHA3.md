@@ -4,8 +4,8 @@
 
 ## Status
 
-**Part 1 (prep, no iroh crate) — done.** Default build only; nothing feature-gated except the refusal check.
-**Part 2 (real iroh dial) — waiting on** Platform's workspace commit (`iroh =0.95.1`, `iroh_local` feature on `stream-peer`, 4 crypto pins, lock) and A3.1 Gateway endpoint.
+**Part 1 (prep) — done** (`0263191`, P2 gate `0944d1e`, P2 copy `4aab61c`).
+**Part 2 (real iroh dial, `--features iroh_local`) — done.** End-to-end against Platform's A3.1 Gateway and A3.3 Control-minted tickets (incl. wrong key → `endpoint_mismatch`, kill < 2 s) in a loopback-only netns: `python3 scripts/a32_peer_dial_smoke.py` → **A3.2_PEER_DIAL_GREEN**.
 
 | Piece | File | Notes |
 |--|--|--|
@@ -42,9 +42,35 @@
 | `SPIKE_GATEWAY_ENDPOINT_ID` | empty (→ every ticket refused) | fixed dev Gateway endpoint ID |
 | `SPIKE_IROH_ALLOW_CIDRS` | `10.73.0.0/24,127.0.0.0/8` | A3.0 guard narrowing (empty = all private ranges) |
 
-## Part 2 (after the iroh lock lands)
+## Part 2 — iroh_local dial (`src/iroh_dial.rs`, feature `iroh_local`)
 
-1. Under `#[cfg(feature = "iroh_local")]`: `SecretKey::from_bytes(key.bytes())`; set `endpoint_id` from the key (ignore `SPIKE_ENDPOINT_ID` in this mode).
-2. Endpoint from the empty builder, `RelayMode::Disabled`, `clear_discovery()`, bind to a guard-checked private addr; `guard::check_discovery(false)`.
-3. Loop: `pre_dial()` → get ticket → `check_dial_target()` → connect to `EndpointAddr(gateway_id, direct_addrs)` on ALPN `stream/tunnel/1` → frames on a bi-stream (reuse `frames.rs`) → register connection in `TransportSlot` so kill closes it ≤ 2 s.
-4. Run inside `ns-peer-a` / `ns-peer-b` (A3.4, no default route) → **A3.2_PEER_DIAL_GREEN**.
+- Key: `SecretKey::from_bytes(IrohKey::bytes())`; the endpoint ID comes from the key (overrides `SPIKE_ENDPOINT_ID` in this mode, also used in HELLO).
+- Endpoint: `Endpoint::empty_builder(RelayMode::Disabled).clear_discovery()`, IPv4 bind `SPIKE_IROH_BIND` (default `127.0.0.1:0`, must pass `guard::check_ip`), IPv6 pinned to `[::1]:0`; after bind it re-checks no relay URL, no discovery service, only private sockets.
+- Target: `SPIKE_GATEWAY_ENDPOINT_ID` + `SPIKE_IROH_GATEWAY_ADDR` (comma list of `ip:port`) → `check_dial_target` (same A3.3 rules as the ticket). Control does not hand these out yet (A3.3), so they come from env.
+- Loop: `pre_dial` (P1 + P2 + not killed, prints screen IDs) → `connect(EndpointAddr(gw id, direct addrs), "stream/tunnel/1")` (TLS authenticates the Gateway ID) → `open_bi` → HELLO written immediately → same NDJSON session as fake_relay (`src/session.rs`, shared with the TCP path; `frames.rs` is now generic over the stream).
+- The connection is registered in `TransportSlot`: `/peer/kill`, `POST /peer/consent {"accepted":false}` and clearing the ack close it (≤ 2 s).
+- Gateway `AUTH_REJECT <reason>` (e.g. `endpoint_mismatch`, `endpoint_bind_required`) or `ERR endpoint_mismatch` → close, `last_error=<reason>`, **no retry** (restart needed). Stream end / connection close → offline, redial after 200 ms if the gates still pass.
+
+stderr lines (exact):
+```
+peer iroh_endpoint_id=<64-hex id>
+peer iroh_local bound [<sockets>] relay=disabled discovery=off
+UX_SCREEN p1_isp_ack
+UX_SCREEN p2_consent
+peer iroh_local connected gateway=<gateway id> alpn=stream/tunnel/1
+peer online <peer_id> endpoint=<id> ack=<v>
+peer iroh_local dial failed: <reason>
+peer iroh_local AUTH_REJECT <reason>: closed, not retrying
+A3 iroh_local refused: <reason>        # startup: public_addr | relay_refused | bad_addr | allowlist_miss | gateway_mismatch | direct_addrs_required | iroh_key_* | iroh_local_feature_not_built
+```
+
+| Env (part 2) | Default | Use |
+|--|--|--|
+| `SPIKE_IROH_BIND` | `127.0.0.1:0` | Peer UDP bind (guarded; e.g. `10.73.0.11:0` in `ns-peer-a`) |
+| `SPIKE_IROH_GATEWAY_ADDR` | empty (→ `direct_addrs_required`) | Gateway direct addrs, e.g. `10.73.0.1:9102` |
+
+Tests: `cargo test --locked -p stream-peer --features iroh_local` (run inside a netns with only `lo`: iroh's portmapper cannot be turned off) adds builder (no relay/discovery, private sockets), ID determinism + dev Gateway ID, guarded bind, mock-Gateway session + kill < 2 s, `endpoint_mismatch` no-retry, wrong Gateway ID fails TLS.
+
+Smoke: `scripts/a32_peer_dial_smoke.py` runs as the normal user, `sudo -n` only for netns; SKIP (exit 0) without cargo / `sudo -n`, FAIL when `SPIKE_IMPL=rust` or `SPIKE_A3=1`. Ready for a `run_local_asserts.py a32` mode.
+
+Left for A3.4: run Peers in `ns-peer-a` / `ns-peer-b` on `br-a3` with `SPIKE_IROH_BIND=10.73.0.1x:0`; get `gateway_endpoint_id` / `direct_addrs` from Control (A3.3) instead of env.
