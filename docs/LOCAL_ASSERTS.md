@@ -176,3 +176,19 @@ python3 scripts/spike_private_guard.py              # Python mirror self-test on
 - Private = `127/8`, `10/8`, `172.16/12`, `192.168/16`, `::1`, `fd00::/8`; IPv4-mapped IPv6 judged as IPv4. `SPIKE_IROH_ALLOW_CIDRS` narrows (unset → `10.73.0.0/24,127.0.0.0/8`; empty → private ranges only).
 - Reasons: `public_addr`, `bad_addr`, `allowlist_miss`, `allowlist_config`, `relay_refused`, `discovery_refused`. Log line `a3_refuse_non_private:<addr>` for public/allowlist misses.
 - If `cargo` is missing the Rust half is skipped with a message, unless `SPIKE_IMPL=rust` (then it fails).
+
+## Alpha-3 Gateway iroh endpoint (A3.1)
+
+Platform's smoke `scripts/a31_gateway_endpoint_smoke.py` (TOM-14), wrapped as an assert mode. **Opt-in, not in `all`** (needs sudo for `ip netns`).
+
+```bash
+python3 scripts/run_local_asserts.py a31               # → A3.1_GATEWAY_ENDPOINT_GREEN (aliases: gateway-endpoint, gateway_endpoint)
+python3 scripts/a31_gateway_endpoint_smoke.py          # the smoke directly
+```
+
+- Builds `stream-gateway --features iroh` (+ `a31_test_client` example) into `rust/target/iroh`; `rust/target/debug` stays the default non-iroh build.
+- Runs Control + Gateway + test client in a throwaway netns with only `lo` (+ `10.73.0.1/24`) and **no default route**. Gateway iroh listen `10.73.0.1:9102`; Control/Gateway HTTP on 8080/1080 *inside the netns*, so it never collides with host stacks or `SPIKE_PORT_BASE` runs. The smoke resets env inside the netns; `SPIKE_PORT_BASE` / `SPIKE_IROH_*` do not apply to it.
+- The runner invokes the smoke as the current user (the smoke calls `sudo` itself for the netns and drops back to the user inside). It pre-checks `sudo -n true` (skipped when already root).
+- Pass = exit 0 **and** the `A3.1_GATEWAY_ENDPOINT_GREEN` line; prints `PASS a31_gateway_endpoint_smoke`.
+- If `cargo` or non-interactive sudo is missing it prints `SKIP a31 ...` and exits 0, unless `SPIKE_IMPL=rust` or `SPIKE_A3=1` (then `FAIL a31: ...`, exit 1).
+- Proves: good ticket → AUTH_OK/OPEN; mismatched `peer_endpoint_id` → AUTH_REJECT `endpoint_mismatch` + close; HELLO with a foreign `endpoint_id` → ERR `endpoint_mismatch`; Gateway refuses public/wildcard/unparseable listen, relay URL, discovery; non-iroh build refuses `iroh_local`.

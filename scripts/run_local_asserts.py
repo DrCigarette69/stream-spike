@@ -165,6 +165,59 @@ def run_a30_private_guard():
     print("\nA3.0_PRIVATE_GUARD_GREEN", flush=True)
 
 
+def run_a31_gateway_endpoint():
+    """A3.1 Gateway iroh_local endpoint smoke (Platform's scripts/a31_gateway_endpoint_smoke.py).
+
+    The smoke builds stream-gateway with `--features iroh` into rust/target/iroh, then runs
+    Control + Gateway + a test client inside a throwaway `ip netns` (only `lo`, no default
+    route). It calls `sudo` itself for the netns steps and drops back to this user inside, so
+    we invoke it as the current user (no root-owned build artifacts) and only pre-check that
+    non-interactive sudo works. Ports (8080/1080/9102) live inside the private netns, so they
+    never collide with host stacks or SPIKE_PORT_BASE runs; the smoke resets env in the netns.
+
+    Not part of `all` (needs sudo). Skips cleanly when cargo or `sudo -n` is unavailable,
+    unless SPIKE_IMPL=rust or SPIKE_A3=1 (then it fails)."""
+    import shutil
+
+    print("\n=== a31_gateway_endpoint_smoke (A3.1) ===", flush=True)
+    impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
+    strict = impl == "rust" or os.environ.get("SPIKE_A3", "").strip() == "1"
+    why = "SPIKE_IMPL=rust" if impl == "rust" else "SPIKE_A3=1"
+
+    def unavailable(reason):
+        if strict:
+            raise SystemExit(f"FAIL a31: {reason} but {why}")
+        print(f"SKIP a31 gateway endpoint smoke: {reason} (set SPIKE_A3=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
+
+    if shutil.which("cargo") is None:
+        unavailable("cargo not found")
+        return
+    if shutil.which("sudo") is None:
+        unavailable("sudo not found (needed for ip netns)")
+        return
+    if os.geteuid() != 0:
+        try:
+            p = subprocess.run(["sudo", "-n", "true"], stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=10)
+            sudo_ok = p.returncode == 0
+        except Exception:
+            sudo_ok = False
+        if not sudo_ok:
+            unavailable("non-interactive sudo (sudo -n) unavailable")
+            return
+
+    p = subprocess.run(
+        [sys.executable, "-u", str(ROOT / "scripts" / "a31_gateway_endpoint_smoke.py")],
+        cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    sys.stdout.write(p.stdout)
+    sys.stdout.flush()
+    green = any(l.strip() == "A3.1_GATEWAY_ENDPOINT_GREEN" for l in p.stdout.splitlines())
+    if p.returncode != 0 or not green:
+        raise SystemExit(f"FAIL a31_gateway_endpoint_smoke (rc={p.returncode}, green_marker={green})")
+    print("PASS a31_gateway_endpoint_smoke", flush=True)
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     if mode in ("a11", "iroh-loopback", "iroh_loopback"):
@@ -178,6 +231,9 @@ def main():
         return 0
     if mode in ("a30", "private-guard", "private_guard"):
         run_a30_private_guard()
+        return 0
+    if mode in ("a31", "gateway-endpoint", "gateway_endpoint"):
+        run_a31_gateway_endpoint()
         return 0
     env = start_stack()
     grace = ["grace-stop", "assert-grace-ledger"]
