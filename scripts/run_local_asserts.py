@@ -176,7 +176,9 @@ def _run_netns_smoke(tag, title, script, marker):
     collide with host stacks or SPIKE_PORT_BASE runs; the smokes reset env in the netns.
 
     Not part of `all` (needs sudo). Skips cleanly when cargo or `sudo -n` is unavailable,
-    unless SPIKE_IMPL=rust or SPIKE_A3=1 (then it fails)."""
+    unless SPIKE_IMPL=rust or SPIKE_A3=1 (then it fails).
+
+    Returns ("pass", combined_output) or ("skip", ""); failures raise SystemExit."""
     import shutil
 
     print(f"\n=== {script} ({title}) ===", flush=True)
@@ -188,13 +190,12 @@ def _run_netns_smoke(tag, title, script, marker):
         if strict:
             raise SystemExit(f"FAIL {tag}: {reason} but {why}")
         print(f"SKIP {tag} {script}: {reason} (set SPIKE_A3=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
+        return "skip", ""
 
     if shutil.which("cargo") is None:
-        unavailable("cargo not found")
-        return
+        return unavailable("cargo not found")
     if shutil.which("sudo") is None:
-        unavailable("sudo not found (needed for ip netns)")
-        return
+        return unavailable("sudo not found (needed for ip netns)")
     if os.geteuid() != 0:
         try:
             p = subprocess.run(["sudo", "-n", "true"], stdin=subprocess.DEVNULL,
@@ -203,8 +204,7 @@ def _run_netns_smoke(tag, title, script, marker):
         except Exception:
             sudo_ok = False
         if not sudo_ok:
-            unavailable("non-interactive sudo (sudo -n) unavailable")
-            return
+            return unavailable("non-interactive sudo (sudo -n) unavailable")
 
     p = subprocess.run(
         [sys.executable, "-u", str(ROOT / "scripts" / f"{script}.py")],
@@ -216,21 +216,270 @@ def _run_netns_smoke(tag, title, script, marker):
     if p.returncode != 0 or not green:
         raise SystemExit(f"FAIL {script} (rc={p.returncode}, green_marker={green})")
     print(f"PASS {script}", flush=True)
+    return "pass", p.stdout
 
 
 def run_a31_gateway_endpoint():
     """A3.1 Gateway iroh_local endpoint smoke (Platform's scripts/a31_gateway_endpoint_smoke.py)."""
-    _run_netns_smoke("a31", "A3.1", "a31_gateway_endpoint_smoke", "A3.1_GATEWAY_ENDPOINT_GREEN")
+    return _run_netns_smoke("a31", "A3.1", "a31_gateway_endpoint_smoke", "A3.1_GATEWAY_ENDPOINT_GREEN")
 
 
 def run_a32_peer_dial():
     """A3.2 Peer iroh_local dial smoke (Peer's scripts/a32_peer_dial_smoke.py)."""
-    _run_netns_smoke("a32", "A3.2", "a32_peer_dial_smoke", "A3.2_PEER_DIAL_GREEN")
+    return _run_netns_smoke("a32", "A3.2", "a32_peer_dial_smoke", "A3.2_PEER_DIAL_GREEN")
 
 
 def run_a33_ticket_bind():
     """A3.3 Control ticket binding smoke (Platform's scripts/a33_ticket_bind_smoke.py)."""
-    _run_netns_smoke("a33", "A3.3", "a33_ticket_bind_smoke", "A3.3_TICKET_BIND_GREEN")
+    return _run_netns_smoke("a33", "A3.3", "a33_ticket_bind_smoke", "A3.3_TICKET_BIND_GREEN")
+
+A34_LOCK = "/tmp/stream-spike-a34.lock"
+A34_NETNS = ("ns-a3-br", "ns-gw", "ns-peer-a", "ns-peer-b")
+A34_LOCK_WAIT_S = 120
+
+
+def run_a34_multinode():
+    """A3.4 multi-node netns smoke (Platform's scripts/a34_multinode_smoke.py).
+
+    Single-instance on the box: the smoke uses fixed netns names (ns-gw / ns-peer-a / ns-peer-b /
+    ns-a3-br, bridge br-a3) and tears them down at the end. So we take an flock on
+    /tmp/stream-spike-a34.lock (wait up to 120 s, then FAIL), and refuse to start if any of those
+    namespaces already exist (someone else's run, or leftovers) instead of deleting them."""
+    import fcntl
+
+    fd = os.open(A34_LOCK, os.O_RDWR | os.O_CREAT, 0o666)
+    deadline = time.time() + A34_LOCK_WAIT_S
+    announced = False
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.time() >= deadline:
+                os.close(fd)
+                raise SystemExit(f"FAIL a34: another a34 run holds {A34_LOCK} (waited {A34_LOCK_WAIT_S}s); "
+                                 "a34 is single-instance on this box, retry when it finishes")
+            if not announced:
+                print(f"a34: waiting for {A34_LOCK} (another a34 run in progress, up to {A34_LOCK_WAIT_S}s)", flush=True)
+                announced = True
+            time.sleep(1)
+    try:
+        listed = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.split()
+        left = [n for n in A34_NETNS if n in listed]
+        if left:
+            raise SystemExit(f"FAIL a34: netns {', '.join(left)} already exist (another A3.4 run or leftovers). "
+                             "Not deleting someone else's topology; if they are yours, run "
+                             "`bash scripts/a3_netns_down.sh` and retry")
+        return _run_netns_smoke("a34", "A3.4", "a34_multinode_smoke", "A3.4_MULTINODE_GREEN")
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+# --------------------------------------------------------------------------- A3.5 (a3)
+# Refusal evidence grepped from the sub-smoke outputs (each smoke already exercises the
+# refusal against the real Rust binaries inside its no-default-route netns).
+A3_REFUSAL_GREPS = (
+    # (smoke, needle, what it proves)
+    ("a31", "OK gateway public listen refused", "Gateway refuses public listen addr"),
+    ("a31", "a3_refuse_non_private:8.8.8.8", "Gateway guard reason for public IP"),
+    ("a31", "a3_refuse_non_private:0.0.0.0", "Gateway refuses wildcard listen"),
+    ("a31", "a3_refuse_relay_refused:https://use1-1.relay.n0.iroh.iroh.link./", "Gateway refuses n0 relay URL"),
+    ("a31", "a3_refuse_discovery_refused", "Gateway refuses discovery"),
+    ("a31", "REFUSED public_addr a3_refuse_non_private:8.8.8.8", "test client refuses public-IP dial"),
+    ("a31", "REFUSED relay_refused", "test client refuses relay URL"),
+    ("a32", "OK peer public direct addr refused: A3 iroh_local refused: public_addr", "Peer refuses public-IP dial"),
+    ("a32", "OK peer relay URL refused: A3 iroh_local refused: relay_refused", "Peer refuses n0 relay URL"),
+    ("a32", "OK peer wildcard bind refused: A3 iroh_local refused: public_addr", "Peer refuses wildcard bind"),
+    ("a32", "iroh_local_feature_not_built", "default Peer build refuses iroh_local"),
+    ("a33", "error=public_addr detail='a3_refuse_non_private:8.8.8.8'", "Control refuses public direct_addrs"),
+    ("a33", "error=allowlist_miss", "Control refuses non-allowlisted private addr"),
+    ("a33", "error=endpoint_bind_required", "Control refuses missing/malformed peer endpoint ID"),
+    ("a33", "error=direct_addrs_required", "Control refuses empty direct_addrs"),
+)
+# No default route inside each smoke's netns.
+A3_NOROUTE_GREPS = (
+    ("a31", "OK netns: no default route"),
+    ("a32", "OK netns: no default route"),
+    ("a33", "OK netns: no default route"),
+)
+# UX ordering evidence from a32 (its Proc.expect consumes Peer stderr in order, so these
+# OK lines only print if UX_SCREEN p1_isp_ack -> UX_SCREEN p2_consent came before the dial).
+A3_UX_ORDER_GREPS = (
+    ("a32", "OK P1 ack only: no dial (P2 consent required)", "no dial before P2 consent"),
+    ("a32", "OK P1 -> P2 screen IDs before dial; peer iroh_local connected", "UX_SCREEN p1_isp_ack, p2_consent before dial"),
+    ("a32", "UX_SCREEN p4_kill", "UX_SCREEN p4_kill on kill-switch"),
+    ("a32", "(<2s)", "kill drops the Peer within 2 s"),
+)
+# A3.4 multi-node evidence (only grepped when a34 ran).
+A3_MULTINODE_GREPS = (
+    ("a34", "peer implementation: real", "real stream-peer --features iroh_local (not the test client)"),
+    ("a34", "OK both peers online over br-a3", "two real Peers in their own netns, own IDs"),
+    ("a34", "-> peer_a", "a Control-minted session lands on Peer A"),
+    ("a34", "-> peer_b", "a Control-minted session lands on Peer B"),
+    ("a34", "peer_a SIGKILLed: gateway dropped it", "kill one Peer -> Gateway drops it, Control marks it offline"),
+    ("a34", "post-kill session", "the other Peer still serves"),
+)
+
+
+def _load_screens():
+    return json.loads((ROOT / "fixtures" / "screens.json").read_text())
+
+
+def _a3_ux_inner():
+    """Inside a throwaway netns: start the iroh_local Peer (no ack -> never dials), GET
+    /peer/consent/p2 and print the Peer's stderr (the `UX P2` block + UX_SCREEN line)."""
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="a3ux_"))
+    peer_bin = ROOT / "rust" / "target" / "iroh" / "debug" / "stream-peer"
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("SPIKE_IROH_", "SPIKE_P2", "SPIKE_ISP_ACK", "SPIKE_PORT_BASE"))}
+    env.update({
+        "CONTROL_URL": "http://127.0.0.1:8080", "SPIKE_PEER_ADMIN": "127.0.0.1:9200",
+        "SPIKE_PEER_ID": "peer_a3ux", "SPIKE_TRANSPORT": "iroh_local",
+        "SPIKE_IROH_KEY_PATH": str(tmp / "peer.key"),
+        "SPIKE_GATEWAY_ENDPOINT_ID": "162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1",
+        "SPIKE_IROH_GATEWAY_ADDR": "10.73.0.1:9102", "SPIKE_IROH_BIND": "10.73.0.1:0",
+        "RUST_LOG": "info", "NO_COLOR": "1",
+    })
+    route = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True).stdout.strip()
+    print(f"A3UX_DEFAULT_ROUTE={route or 'none'}", flush=True)
+    err = open(tmp / "peer.stderr", "w+")
+    p = subprocess.Popen([str(peer_bin)], env=env, stdout=err, stderr=subprocess.STDOUT)
+    try:
+        for _ in range(100):
+            if http_ok("http://127.0.0.1:9200/health"):
+                break
+            time.sleep(0.1)
+        with urllib.request.urlopen("http://127.0.0.1:9200/peer/consent/p2", timeout=5) as r:
+            body = json.loads(r.read().decode())
+        print("A3UX_P2_JSON=" + json.dumps(body), flush=True)
+        time.sleep(0.5)
+    finally:
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    err.seek(0)
+    print("A3UX_STDERR_BEGIN", flush=True)
+    sys.stdout.write(err.read())
+    print("A3UX_STDERR_END", flush=True)
+    return 0
+
+
+def _a3_ux_copy_check():
+    """P2 copy on the iroh_local Peer's real stderr: fragments from fixtures/screens.json
+    (`p2_consent.required_copy`) + `forbidden_user_facing_substrings`, nothing hardcoded."""
+    print("\n=== A3.5 UX copy (iroh_local Peer stderr, own netns) ===", flush=True)
+    peer_bin = ROOT / "rust" / "target" / "iroh" / "debug" / "stream-peer"
+    if not peer_bin.exists():
+        raise SystemExit(f"FAIL a3: {peer_bin} missing (a32 builds it)")
+    ns = f"a3ux-{os.getpid()}"
+    user = os.environ.get("USER") or subprocess.check_output(["id", "-un"], text=True).strip()
+    try:
+        for cmd in (["ip", "netns", "add", ns], ["ip", "-n", ns, "link", "set", "lo", "up"],
+                    ["ip", "-n", ns, "addr", "add", "10.73.0.1/24", "dev", "lo"]):
+            subprocess.run(["sudo", "-n", *cmd], check=True, stdin=subprocess.DEVNULL)
+        p = subprocess.run(["sudo", "-n", "ip", "netns", "exec", ns, "sudo", "-n", "-u", user, "env",
+                            f"PATH={os.environ.get('PATH', '')}", f"HOME={os.environ.get('HOME', '')}",
+                            sys.executable, "-u", str(Path(__file__).resolve()), "_a3_ux_inner"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    finally:
+        subprocess.run(["sudo", "-n", "ip", "netns", "del", ns], stdin=subprocess.DEVNULL)
+    out = p.stdout
+    if p.returncode != 0 or "A3UX_STDERR_BEGIN" not in out:
+        raise SystemExit(f"FAIL a3 ux capture rc={p.returncode}: {(out + p.stderr)[-800:]}")
+    if "A3UX_DEFAULT_ROUTE=none" not in out:
+        raise SystemExit("FAIL a3: ux netns has a default route")
+    print("OK ux netns: no default route", flush=True)
+    stderr = out.split("A3UX_STDERR_BEGIN", 1)[1].split("A3UX_STDERR_END", 1)[0].splitlines()
+    if not any("UX P2" == l.strip() for l in stderr):
+        raise SystemExit(f"FAIL a3: no `UX P2` block on Peer stderr: {stderr[-10:]}")
+    i = next(n for n, l in enumerate(stderr) if l.strip() == "UX P2")
+    j = next((n for n in range(i + 1, len(stderr)) if stderr[n].strip() == "UX_SCREEN p2_consent"), None)
+    if j is None:
+        raise SystemExit("FAIL a3: `UX_SCREEN p2_consent` does not follow the `UX P2` block")
+    block = "\n".join(stderr[i + 1:j])
+    print("  [peer] UX P2", flush=True)
+    for l in stderr[i + 1:j + 1]:
+        print(f"  [peer] {l}", flush=True)
+    screens = _load_screens()
+    p2 = next(c for c in screens["consent"] if c.get("id") == "p2_consent")
+    frags = p2.get("required_copy") or []
+    if not frags:
+        raise SystemExit("FAIL a3: fixtures/screens.json p2_consent.required_copy is empty")
+    for frag in frags:
+        if frag not in block:
+            raise SystemExit(f"FAIL a3: P2 required_copy {frag!r} (fixtures/screens.json) not on Peer stderr")
+        print(f"OK p2_consent required_copy on Peer stderr: {frag!r}", flush=True)
+    for bad in screens.get("forbidden_user_facing_substrings", []):
+        if bad in block:
+            raise SystemExit(f"FAIL a3: forbidden user-facing substring {bad!r} in Peer P2 block")
+    print(f"OK P2 block clean of forbidden_user_facing_substrings ({len(screens.get('forbidden_user_facing_substrings', []))} from fixture)", flush=True)
+
+
+def run_a3_iroh_local():
+    """A3.5 / TOM-18: A3.0-A3.4 + refusals + UX greps + banned-word checks -> A3_IROH_LOCAL_GREEN."""
+    import shutil
+
+    impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
+    strict = impl == "rust" or os.environ.get("SPIKE_A3", "").strip() == "1"
+    pending: list[str] = []
+
+    run_a30_private_guard()
+    outs = {}
+    for tag, fn in (("a31", run_a31_gateway_endpoint), ("a32", run_a32_peer_dial), ("a33", run_a33_ticket_bind)):
+        status, outs[tag] = fn()
+        if status != "pass":
+            pending.append(f"{tag} skipped")
+    if (ROOT / "scripts" / "a34_multinode_smoke.py").exists():
+        status, outs["a34"] = run_a34_multinode()
+        if status != "pass":
+            pending.append("a34 skipped")
+    else:
+        print("\nPENDING a34 (scripts/a34_multinode_smoke.py not on main)", flush=True)
+        pending.append("a34 (scripts/a34_multinode_smoke.py not on main)")
+
+    print("\n=== A3.5 greps over sub-smoke output ===", flush=True)
+    for tag, needle, what in A3_REFUSAL_GREPS + A3_UX_ORDER_GREPS + A3_MULTINODE_GREPS:
+        if tag not in outs or not outs[tag]:
+            continue
+        if needle not in outs[tag]:
+            raise SystemExit(f"FAIL a3: {tag} output lacks {needle!r} ({what})")
+        print(f"OK [{tag}] {what}: {needle!r}", flush=True)
+    noroute = A3_NOROUTE_GREPS + ((("a34", "OK no default route (v4/v6) in ns-a3-br, ns-gw, ns-peer-a, ns-peer-b"),)
+                                  if outs.get("a34") else ())
+    for tag, needle in noroute:
+        if outs.get(tag):
+            if needle not in outs[tag]:
+                raise SystemExit(f"FAIL a3: {tag} output lacks {needle!r}")
+            print(f"OK [{tag}] netns has no default route", flush=True)
+
+    if outs.get("a32"):
+        _a3_ux_copy_check()
+
+    print("\n=== A3.5 banned-word / UX checks (existing Rust Peer tests, unchanged) ===", flush=True)
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pending.append("Rust ux tests skipped (no cargo)")
+        print("SKIP a3 Rust ux tests: cargo not found", flush=True)
+    else:
+        p = subprocess.run([cargo, "test", "--locked", "-q", "-p", "stream-peer", "--", "ux::", "iroh_local::"],
+                           cwd=str(ROOT / "rust"), stdin=subprocess.DEVNULL)
+        if p.returncode != 0:
+            raise SystemExit("FAIL a3: stream-peer ux:: / iroh_local:: tests")
+        print("PASS stream-peer ux:: + iroh_local:: tests (fixture drift, forbidden copy, screen order)", flush=True)
+
+    if pending:
+        print(f"\nA3_IROH_LOCAL_NOT_GREEN pending: {'; '.join(pending)}", flush=True)
+        if strict:
+            raise SystemExit(1)
+        return 3
+    print("\nA3_IROH_LOCAL_GREEN", flush=True)
+    return 0
+
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
@@ -252,6 +501,16 @@ def main():
     if mode in ("a32", "peer-dial", "peer_dial"):
         run_a32_peer_dial()
         return 0
+    if mode == "_a3_ux_inner":
+        return _a3_ux_inner()
+    if mode in ("a34", "multinode", "multi-node", "multi_node"):
+        if not (ROOT / "scripts" / "a34_multinode_smoke.py").exists():
+            print("PENDING a34 (scripts/a34_multinode_smoke.py not on main)", flush=True)
+            return 1 if os.environ.get("SPIKE_A3", "").strip() == "1" or os.environ.get("SPIKE_IMPL", "") == "rust" else 3
+        run_a34_multinode()
+        return 0
+    if mode in ("a3", "iroh-local", "iroh_local"):
+        return run_a3_iroh_local()
     if mode in ("a33", "ticket-bind", "ticket_bind"):
         run_a33_ticket_bind()
         return 0

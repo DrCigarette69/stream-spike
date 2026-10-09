@@ -17,6 +17,13 @@ echo
 echo "=== Stream Alpha · A1.3 mock top-up · SPIKE_IMPL=${IMPL} ==="
 python3 scripts/run_local_asserts.py a13
 echo
+if [ "${SPIKE_A3:-}" = "1" ]; then
+  echo
+  echo "=== Stream Alpha · A3 iroh_local (A3.0–A3.4 + refusals + UX) · SPIKE_IMPL=${IMPL} ==="
+  python3 scripts/run_local_asserts.py a3   # → A3_IROH_LOCAL_GREEN (needs cargo + sudo -n; fails under SPIKE_A3=1 if not green)
+  echo
+fi
 echo "Alpha proof: SPIKE_DOD_GREEN + A1.1_IROH_LOOPBACK_GREEN + PEER_ALPHA1_CLI_GREEN + A1.3_MOCK_TOPUP_GREEN."
 echo "Rust cut (A2.3): SPIKE_IMPL=rust ./scripts/demo_alpha.sh  # same proofs on Rust peer+gateway"
+echo "Alpha-3: SPIKE_A3=1 ./scripts/demo_alpha.sh  # adds run_local_asserts.py a3 → A3_IROH_LOCAL_GREEN"
 echo "See docs/ALPHA.md · docs/SPIKE_IMPL_RUST.md · docs/ALPHA2_RUST.md"

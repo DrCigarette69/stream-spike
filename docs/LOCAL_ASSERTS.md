@@ -219,3 +219,44 @@ python3 scripts/a33_ticket_bind_smoke.py               # the smoke directly
 - Same runner semantics as `a31`: `sudo -n true` pre-check (skipped when root), pass = exit 0 **and** the marker line, then `PASS a33_ticket_bind_smoke`. Missing `cargo`/sudo → `SKIP a33 ...` (exit 0), unless `SPIKE_IMPL=rust` or `SPIKE_A3=1` → `FAIL a33: ...` (exit 1).
 - Proves (Control, `SPIKE_TRANSPORT=iroh_local`): 422 `endpoint_bind_required` for missing/malformed peer endpoint ID; `direct_addrs_required` for empty `SPIKE_IROH_GATEWAY_ADDR`; `public_addr` / `allowlist_miss` via the A3.0 guard (`SPIKE_IROH_ALLOW_CIDRS=''` lifts narrowing); non-iroh transports mint unchanged. End-to-end: a Control-minted ticket binds the Gateway-authenticated peer ID → AUTH_TICKET → AUTH_OK → OPEN; a stale ticket after another key takes over the `peer_id` → AUTH_REJECT `endpoint_mismatch` + close.
 - **Known gap (compose):** `control/Dockerfile` does not copy `scripts/spike_private_guard.py`, so Control in compose with `SPIKE_TRANSPORT=iroh_local` refuses to mint with `guard_unavailable`. A3.3 is verified in the host netns only; default (`fake_relay`) compose is unaffected.
+
+## Alpha-3 multi-node (A3.4)
+
+Platform's smoke `scripts/a34_multinode_smoke.py` (TOM-17), wrapped with the shared netns-smoke helper. **Opt-in, not in `all`.** It takes about 60 s.
+
+```bash
+python3 scripts/run_local_asserts.py a34               # → A3.4_MULTINODE_GREEN (aliases: multinode, multi-node, multi_node)
+sudo bash scripts/a3_netns_up.sh / a3_netns_down.sh    # reusable topology setup/teardown (br-a3, ns-gw .1, ns-peer-a .11, ns-peer-b .12)
+```
+
+- **Single-instance on the box.** The smoke uses fixed netns names (`ns-a3-br`, `ns-gw`, `ns-peer-a`, `ns-peer-b`, bridge `br-a3`) and tears them down at the end. The runner takes `flock /tmp/stream-spike-a34.lock` and waits up to 120 s for another run to finish, then fails. If any of those namespaces already exist it **fails without deleting them**, because they may be someone else's live run. Remove your own leftovers with `bash scripts/a3_netns_down.sh`.
+- Skip/fail rules are the same as `a31`–`a33`.
+- **Behaviour changes in A3.4 to be aware of:**
+  - The Gateway's `iroh_local` idle timeout is 6 s (`SPIKE_IROH_IDLE_TIMEOUT_MS`), so a SIGKILLed Peer is dropped after about 6 s.
+  - The Gateway tells Control through `POST /v1/peers/offline`.
+  - Matching breaks ties least-recently-used first, so sessions alternate between Peers.
+
+## Alpha-3 iroh_local roll-up (A3.5 / TOM-18)
+
+`a3` (aliases `iroh-local`, `iroh_local`) is the A3 roll-up from [`ALPHA3_IROH.md`](ALPHA3_IROH.md). **Opt-in, not in `all`.** It prints **A3_IROH_LOCAL_GREEN** only when every part below passes.
+
+```bash
+python3 scripts/run_local_asserts.py a3                 # → A3_IROH_LOCAL_GREEN, or A3_IROH_LOCAL_NOT_GREEN pending: ...
+python3 scripts/run_local_asserts.py a34                # A3.4 alone (single-instance)
+SPIKE_A3=1 ./scripts/demo_alpha.sh                      # default demo steps, then the a3 block
+```
+
+1. **Sub-greens:** `a30`, then `a31`, `a32`, `a33` and `a34`, run **one at a time** through the shared netns-smoke helper (same skip/fail rules; `a34` takes its lock). If a sub-smoke is skipped, or `scripts/a34_multinode_smoke.py` is missing (`PENDING a34 ...`), `a3` does **not** print the green.
+2. **Refusals, grepped from the sub-smoke output** (each smoke drives the real binaries in a no-default-route netns). The list is `A3_REFUSAL_GREPS` in `run_local_asserts.py`:
+   - a31 Gateway: `a3_refuse_non_private:8.8.8.8` (public listen), `a3_refuse_non_private:0.0.0.0` (wildcard listen), `a3_refuse_relay_refused:https://use1-1.relay.n0.iroh.iroh.link./` (n0 relay), `a3_refuse_discovery_refused`.
+   - a31 test client: `REFUSED public_addr a3_refuse_non_private:8.8.8.8` (public-IP dial), `REFUSED relay_refused`.
+   - a32 Peer: `A3 iroh_local refused: public_addr` (public-IP dial and wildcard bind), `A3 iroh_local refused: relay_refused` (n0 relay), `iroh_local_feature_not_built`.
+   - a33 Control: `error=public_addr detail='a3_refuse_non_private:8.8.8.8'`, `error=allowlist_miss`, `error=endpoint_bind_required`, `error=direct_addrs_required`.
+   - No default route: `OK netns: no default route` in a31, a32 and a33; `OK no default route (v4/v6) in ns-a3-br, ns-gw, ns-peer-a, ns-peer-b` in a34; plus a check in a3's own UX netns.
+   - a34 multi-node (`A3_MULTINODE_GREPS`): `peer implementation: real`, `OK both peers online over br-a3`, `-> peer_a`, `-> peer_b`, `peer_a SIGKILLed: gateway dropped it`, `post-kill session`.
+   - Peer discovery has no on switch: `iroh_dial::bind_endpoint` always calls `check_discovery(false)` and refuses an endpoint with discovery. The `discovery_refused` reason itself is covered by the a30 guard tests.
+3. **UX greps:**
+   - Order comes from a32's in-order reads of the Peer's stderr: `OK P1 ack only: no dial (P2 consent required)`, `OK P1 -> P2 screen IDs before dial; peer iroh_local connected` (`UX_SCREEN p1_isp_ack`, then `UX_SCREEN p2_consent`, before the dial), and `UX_SCREEN p4_kill` with `(<2s)` on kill. a32 prints only these summary lines, not the Peer's raw stderr.
+   - Copy: a3 starts the `iroh_local` Peer in its own netns (no ack, so it never dials), calls `GET /peer/consent/p2` and captures the real stderr. The `UX P2` block must be followed by `UX_SCREEN p2_consent` and contain every `p2_consent.required_copy` fragment, **read from `fixtures/screens.json`** (nothing hardcoded), with none of the fixture's `forbidden_user_facing_substrings`.
+4. **Banned words (existing checks, unchanged):** `cargo test --locked -p stream-peer -- ux:: iroh_local::` (fixture drift, forbidden copy, screen order). The client-cli `forbid_brand` and `peer_alpha1_cli` `assert_no_forbidden` checks still run in `all` / `demo_alpha.sh`.
+5. **Exit codes:** green prints `A3_IROH_LOCAL_GREEN` (exit 0). Not green prints `A3_IROH_LOCAL_NOT_GREEN pending: ...` and exits 1 under `SPIKE_A3=1` / `SPIKE_IMPL=rust`, otherwise 3. It never exits 0 without the green. Any failed check prints `FAIL ...` and exits 1.
