@@ -57,6 +57,18 @@ pub async fn enroll_peer(
     .await;
 }
 
+/// A3.4: Peer connection gone (iroh_local). Control ignores it if the peer re-enrolled with
+/// another endpoint id meanwhile.
+pub async fn peer_offline(st: &AppState, peer_id: &str, endpoint_id: &str, reason: &str) {
+    let _ = http_json(
+        st,
+        reqwest::Method::POST,
+        "/v1/peers/offline",
+        Some(json!({ "peer_id": peer_id, "endpoint_id": endpoint_id, "reason": reason })),
+    )
+    .await;
+}
+
 pub async fn dest_check(st: &AppState, host: &str, port: u16) -> (u16, Value) {
     http_json(
         st,

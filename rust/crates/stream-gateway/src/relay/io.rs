@@ -159,14 +159,21 @@ pub(crate) async fn handle_peer_conn(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
+    let mut gone = false;
     {
         let mut peers = st.peers.write().await;
         if let Some(meta) = peers.get(&peer_id) {
             if Arc::ptr_eq(&meta.sock, &sock) {
                 peers.remove(&peer_id);
                 tracing::info!("peer offline {peer_id}");
+                gone = true;
             }
         }
+    }
+    // A3.4 (iroh_local only): tell Control so matching stops picking a dead Peer.
+    // Not sent when the entry was replaced by a newer connection for the same peer_id.
+    if gone && auth_endpoint_id.is_some() {
+        control::peer_offline(&st, &peer_id, &endpoint_id, "conn_closed").await;
     }
     Ok(())
 }

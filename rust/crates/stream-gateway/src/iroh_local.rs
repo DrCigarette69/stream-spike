@@ -25,6 +25,8 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:9102";
 pub const DEFAULT_KEY_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/dev/gateway_dev.key");
 pub const REASON_ENDPOINT_MISMATCH: &str = "endpoint_mismatch";
 pub const REASON_ENDPOINT_BIND_REQUIRED: &str = "endpoint_bind_required";
+/// A3.4: a hard-killed Peer is noticed within this (keep-alive 1 s). Env: SPIKE_IROH_IDLE_TIMEOUT_MS.
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 6000;
 
 /// One authenticated iroh connection + its single bi stream.
 pub struct IrohStream {
@@ -119,7 +121,20 @@ pub async fn bind(cfg: &IrohConfig) -> Result<Endpoint, String> {
         SocketAddr::V4(a) => (a, SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0)),
         SocketAddr::V6(a) => (SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0), a),
     };
+    let idle_ms = env_nonempty("SPIKE_IROH_IDLE_TIMEOUT_MS")
+        .map(|v| v.parse::<u64>().map_err(|_| format!("SPIKE_IROH_IDLE_TIMEOUT_MS={v:?}: not a number")))
+        .transpose()?
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS)
+        .clamp(1000, 60_000);
+    let mut tc = iroh::endpoint::TransportConfig::default();
+    tc.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+    tc.max_idle_timeout(Some(
+        std::time::Duration::from_millis(idle_ms)
+            .try_into()
+            .map_err(|e| format!("idle timeout: {e}"))?,
+    ));
     let ep = Endpoint::empty_builder(RelayMode::Disabled)
+        .transport_config(tc)
         .clear_discovery()
         .secret_key(key)
         .alpns(vec![ALPN.as_bytes().to_vec()])

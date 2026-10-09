@@ -20,6 +20,9 @@ pub async fn drop_peer(st: &AppState, peer_id: &str, reason: &str) {
             s.close_with(reason).await;
         }
         tracing::info!("peer dropped {peer_id} {reason}");
+        if meta.auth_endpoint_id.is_some() {
+            crate::control::peer_offline(st, peer_id, &meta.endpoint_id, reason).await;
+        }
     }
 }
 

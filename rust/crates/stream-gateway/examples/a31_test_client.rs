@@ -2,7 +2,8 @@
 //! NOT the real Peer (that is stream-peer, A3.2). Random key per run; never touches relays.
 //!
 //!   a31_test_client --gateway-id <ID> --direct-addr <ip:port> [--peer-id P] [--relay-url URL]
-//!                   [--hello-endpoint-id ID]
+//!                   [--hello-endpoint-id ID] [--bind IP]   (local v4 bind, default 127.0.0.1;
+//!                   must be on the gateway's subnet for multi-node, e.g. 10.73.0.11; guard-checked)
 //!
 //! Contract: dial gateway (ALPN stream/tunnel/1), open ONE bi stream, send NDJSON HELLO;
 //! expect HELLO_OK; answer AUTH_TICKET with AUTH_OK; print every frame as `RX {json}`.
@@ -46,6 +47,13 @@ async fn main() {
         }
     };
     let gw_id = EndpointId::from_str(&gw).expect("gateway id parses");
+    let bind_ip: Ipv4Addr = arg(&args, "--bind")
+        .map(|b| b.parse().expect("--bind must be an IPv4 address"))
+        .unwrap_or(Ipv4Addr::LOCALHOST);
+    if let Err(e) = guard::check_ip(bind_ip.into()) {
+        out(format!("REFUSED {} {}", e.reason(), e.log_line()));
+        std::process::exit(3);
+    }
 
     let mut seed = [0u8; 32];
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom").unwrap(), &mut seed).unwrap();
@@ -57,7 +65,7 @@ async fn main() {
     let ep = Endpoint::empty_builder(RelayMode::Disabled)
         .clear_discovery()
         .secret_key(key)
-        .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .bind_addr_v4(SocketAddrV4::new(bind_ip, 0))
         .bind_addr_v6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))
         .bind()
         .await

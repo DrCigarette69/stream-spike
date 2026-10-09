@@ -29,6 +29,7 @@ HOST, PORT = LISTEN.rsplit(":", 1)
 
 _lock = threading.RLock()
 _events: list[dict] = []  # append-only for harness
+_last_assigned: dict[str, float] = {}  # peer_id -> monotonic time of last match (tie-break)
 _fixtures = {
     "strict_unavailable": False,
     "country_paused": False,
@@ -504,6 +505,22 @@ class Handler(BaseHTTPRequestHandler):
                 c.close()
             return self._json(200, {"peer_id": peer_id, "endpoint_id": endpoint_id, "online": True})
 
+        if path == "/v1/peers/offline":
+            # A3.4: Gateway reports a Peer connection gone (iroh_local). Ignored when the peer
+            # has since re-enrolled with a different endpoint id (newer connection wins).
+            peer_id = body.get("peer_id", "")
+            eid = body.get("endpoint_id") or ""
+            with _lock:
+                c = _conn()
+                cur = c.execute("UPDATE peers SET online=0 WHERE peer_id=? AND (?='' OR endpoint_id=?)",
+                                (peer_id, eid, eid))
+                changed = cur.rowcount
+                c.commit()
+                c.close()
+            if changed:
+                _emit("peer.offline", peer_id=peer_id, endpoint_id=eid, reason=body.get("reason", ""))
+            return self._json(200, {"ok": True, "offline": bool(changed)})
+
         if path == "/v1/peers/heartbeat":
             peer_id = body.get("peer_id", "peer_demo")
             with _lock:
@@ -839,9 +856,12 @@ class Handler(BaseHTTPRequestHandler):
                     503,
                     {"error": "capacity_oversubscribed", "code": "capacity_oversubscribed", "capacity": cap},
                 )
-            peer = c.execute(
-                "SELECT * FROM peers WHERE online=1 ORDER BY load ASC LIMIT 1"
-            ).fetchone()
+            # Lowest load wins; ties go to the least recently assigned Peer (A3.4 spreads sessions
+            # across equal Peers; with one online Peer this is the old behaviour).
+            online = c.execute("SELECT * FROM peers WHERE online=1 ORDER BY load ASC, rowid ASC").fetchall()
+            peer = min(online, key=lambda r: (r["load"], _last_assigned.get(r["peer_id"], 0.0))) if online else None
+            if peer is not None:
+                _last_assigned[peer["peer_id"]] = time.monotonic()
             if not peer:
                 # allow match against demo peer even if offline for quote; gateway/peer must enroll
                 peer = c.execute("SELECT * FROM peers WHERE peer_id='peer_demo'").fetchone()

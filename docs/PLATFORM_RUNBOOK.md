@@ -261,3 +261,37 @@ It checks:
 - a ticket minted for key A, presented after key B took over the same `peer_id` → `endpoint_mismatch` at the Gateway, plus close
 
 `a31_gateway_endpoint_smoke.py` now also uses a Control-minted ticket for its good case.
+
+## A3.4 Multi-node netns (TOM-17)
+
+```bash
+sudo bash scripts/a3_netns_up.sh     # idempotent → A3_NETNS_UP …
+sudo bash scripts/a3_netns_down.sh   # idempotent; kills processes left in the ns, deletes them → A3_NETNS_DOWN
+python3 scripts/a34_multinode_smoke.py   # up → run → down → A3.4_MULTINODE_GREEN
+```
+
+| netns | iface | addr | runs |
+|---|---|---|---|
+| `ns-a3-br` | bridge `br-a3` (no IP) | — | nothing (keeps the bridge off the host stack) |
+| `ns-gw` | `a3eth0` (veth `a3v-gw`) | `10.73.0.1/24` | Control `10.73.0.1:8080`, Gateway iroh `10.73.0.1:9102` (admin `127.0.0.1:1080`, ns-local) |
+| `ns-peer-a` | `a3eth0` (veth `a3v-pa`) | `10.73.0.11/24` | Peer A |
+| `ns-peer-b` | `a3eth0` (veth `a3v-pb`) | `10.73.0.12/24` | Peer B |
+
+- **No default route anywhere.** Each node ns has only `lo` and the connected `10.73.0.0/24` route. IPv6 router advertisements are off, so no v6 default route appears either. Both the up script and the smoke check every ns for a default route. Peers reach Control and the Gateway only over `br-a3`.
+- **Real Peer env for each ns:**
+  - `SPIKE_TRANSPORT=iroh_local`
+  - `SPIKE_IROH_BIND=10.73.0.1x:0` (its ns address)
+  - its own `SPIKE_IROH_KEY_PATH` (0600). Sharing a key means sharing an endpoint ID, and the Gateway then rejects one Peer with `endpoint_mismatch`.
+  - `SPIKE_GATEWAY_ENDPOINT_ID`=dev ID, `SPIKE_IROH_GATEWAY_ADDR=10.73.0.1:9102`, `CONTROL_URL=http://10.73.0.1:8080`
+  - headless consent: `SPIKE_ISP_ACK_VERSION=v1` **and** `SPIKE_P2_CONSENT=1`. P2 alone is ignored.
+- **Smoke** (`A34_PEER=real|testclient|auto`; the default `auto` picks the real `stream-peer --features iroh_local`):
+  1. Both Peers enroll with their own authenticated IDs.
+  2. Two Control-minted sessions land on Peer A and on Peer B, each ticket bound to that Peer.
+  3. Peer A is SIGKILLed (no QUIC close, no kill-switch). The Gateway notices after its idle timeout and reports to Control.
+  4. Two new sessions are both served by Peer B.
+  5. The down script runs and the smoke checks that all four netns are gone.
+- **What this added to the Gateway and Control:**
+  - Gateway (`iroh_local`): QUIC `max_idle_timeout` = `SPIKE_IROH_IDLE_TIMEOUT_MS` (default 6000, clamped 1000–60000) with a 1 s keep-alive, so a dead Peer is noticed in about 6 s.
+  - When an iroh Peer's connection ends (drop, `endpoint_mismatch`, idle timeout), the Gateway calls Control `POST /v1/peers/offline {peer_id, endpoint_id, reason}`. It skips the call when a newer connection replaced the entry. Control sets `online=0` only if `endpoint_id` still matches, and emits `peer.offline`.
+  - Control matching: lowest `load` first; ties go to the least recently matched Peer (in-memory). With one online Peer this behaves as before.
+- No `dummy` link type on this box. `veth` and `bridge` work.

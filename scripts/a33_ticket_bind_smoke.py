@@ -155,10 +155,12 @@ def inner() -> int:
         h.fail(f"mismatch: {st} {r} {rej}")
     h.ok(f"mismatched ID at the Gateway (ticket for A={aid[:12]}…, conn B={bid[:12]}…): /gw/start {st} "
          f"error={r['error']}; peerB got AUTH_REJECT endpoint_mismatch; {closed}")
-    # Fresh mint now binds B
-    fresh = h.mint_session(h.CONTROL)
-    if fresh["ticket"]["payload"]["peer_endpoint_id"] == bid:
-        h.ok("after re-enroll, Control mints for B")
+    # The Gateway dropped B on the mismatch and (A3.4) told Control, so B is no longer matchable.
+    _, ev = h.http("GET", h.CONTROL + "/v1/events")
+    off = [e for e in ev.get("events", []) if e.get("event") == "peer.offline" and e.get("peer_id") == "peer_a33"]
+    if not off or off[-1].get("endpoint_id") != bid:
+        h.fail(f"Control not told B went offline: {off}")
+    h.ok(f"Gateway reported the dropped connection: Control peer.offline endpoint={bid[:12]}… reason={off[-1].get('reason')}")
 
     print("\nA3.3_TICKET_BIND_GREEN", flush=True)
     return 0
