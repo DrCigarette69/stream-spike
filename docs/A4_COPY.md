@@ -16,3 +16,13 @@ P1 ack → P2 consent → P9 allowlist note → dial. On drop or reject → P8. 
 - Peer: emit `UX_SCREEN p8_offline` / `p9_allowlist` with the fixture lines; mirror any fixture copy the Rust build needs the same way as `p2_consent.json`.
 - Platform: emit `UX c2_add_funds_test` on test-mode top-up; keep mock path for keyless runs.
 - Architect: add the new greps to the A4 asserts, read from the fixture.
+
+## P8 reason map (pilot additions, `fd19e0d`+)
+| Code | Line |
+|---|---|
+| `egress_off`, `egress_state_stale` | Pilot sharing is switched off right now. We'll show you online again when it's back on. |
+| `egress_budget_exceeded` | You've reached today's sharing limit. Sharing starts again tomorrow. |
+| `egress_allowlist_mismatch` | This device needs an update before it can share. Update the app, then turn sharing back on. |
+| anything unknown | falls back to `connection_lost` |
+
+"Tomorrow" means the next UTC day, matching `SPIKE_EGRESS_BYTE_CAP`. If the cap reset moves to local time, this line stays the same.

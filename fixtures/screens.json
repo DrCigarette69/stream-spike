@@ -195,14 +195,19 @@
       "reason_lines": {
         "endpoint_mismatch": "This device's sharing key doesn't match how it was set up. Set up sharing again on this device to keep going.",
         "endpoint_bind_required": "This device's sharing key doesn't match how it was set up. Set up sharing again on this device to keep going.",
-        "connection_lost": "The connection dropped. Check your internet, then turn sharing back on."
+        "connection_lost": "The connection dropped. Check your internet, then turn sharing back on.",
+        "egress_off": "Pilot sharing is switched off right now. We'll show you online again when it's back on.",
+        "egress_state_stale": "Pilot sharing is switched off right now. We'll show you online again when it's back on.",
+        "egress_budget_exceeded": "You've reached today's sharing limit. Sharing starts again tomorrow.",
+        "egress_allowlist_mismatch": "This device needs an update before it can share. Update the app, then turn sharing back on."
       },
       "cta": "Turn sharing back on",
       "rules": [
         "Never show raw reason codes to the user; map to reason_lines",
         "Do not auto-retry after endpoint_mismatch",
         "Turning sharing back on still requires P1 ack + P2 consent on record",
-        "Distinct from P4: P4 is user-paused, P8 is stopped by the system"
+        "Distinct from P4: P4 is user-paused, P8 is stopped by the system",
+        "Unknown reason codes fall back to connection_lost"
       ]
     },
     {
