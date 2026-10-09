@@ -32,6 +32,13 @@ async fn main() {
         .init();
 
     let cfg = Config::from_env();
+    let addr: SocketAddr = match config::parse_admin_addr(&cfg.admin_listen) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("peer {e}");
+            std::process::exit(2);
+        }
+    };
     if cfg.isp_ack_version.is_empty() {
         eprintln!("UX P1\n{}", ux::p1_user_facing());
     }
@@ -58,10 +65,6 @@ async fn main() {
         http,
     });
 
-    let addr: SocketAddr = cfg
-        .admin_listen
-        .parse()
-        .unwrap_or_else(|_| "0.0.0.0:9200".parse().unwrap());
     let ack = state.read().await.isp_ack_version.clone();
     eprintln!(
         "peer admin on {} transport={} dial={} ack={:?} hardening=1",

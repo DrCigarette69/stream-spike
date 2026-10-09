@@ -78,6 +78,14 @@ pub fn is_iroh_local(transport: &str) -> bool {
     transport == "iroh_local"
 }
 
+/// `SPIKE_PEER_ADMIN` must be `ip:port`; a bad value is fatal
+/// (`admin_addr_invalid:<value>`) instead of silently falling back to 0.0.0.0:9200.
+pub fn parse_admin_addr(s: &str) -> Result<std::net::SocketAddr, String> {
+    s.trim()
+        .parse()
+        .map_err(|_| format!("admin_addr_invalid:{s}"))
+}
+
 pub fn is_loopback_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     matches!(h.as_str(), "127.0.0.1" | "::1" | "localhost")
@@ -96,6 +104,15 @@ pub fn split_host_port(addr: &str) -> Result<(String, u16), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_addr_parse_is_strict() {
+        assert_eq!(parse_admin_addr("0.0.0.0:9200").unwrap().port(), 9200);
+        assert_eq!(parse_admin_addr("127.0.0.1:18085").unwrap().port(), 18085);
+        assert_eq!(parse_admin_addr("localhost:9200").unwrap_err(), "admin_addr_invalid:localhost:9200");
+        assert_eq!(parse_admin_addr("9200").unwrap_err(), "admin_addr_invalid:9200");
+        assert_eq!(parse_admin_addr("").unwrap_err(), "admin_addr_invalid:");
+    }
 
     #[test]
     fn loopback_dial_hosts() {
