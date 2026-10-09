@@ -199,7 +199,8 @@
         "egress_off": "Pilot sharing is switched off right now. We'll show you online again when it's back on.",
         "egress_state_stale": "Pilot sharing is switched off right now. We'll show you online again when it's back on.",
         "egress_budget_exceeded": "You've reached today's sharing limit. Sharing starts again tomorrow.",
-        "egress_allowlist_mismatch": "This device needs an update before it can share. Update the app, then turn sharing back on."
+        "egress_allowlist_mismatch": "This device needs an update before it can share. Update the app, then turn sharing back on.",
+        "relay_path_required": "Sharing stopped because the connection left its expected secure route. Turn sharing back on to reconnect."
       },
       "cta": "Turn sharing back on",
       "rules": [

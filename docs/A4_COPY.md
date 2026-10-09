@@ -23,6 +23,7 @@ P1 ack → P2 consent → P9 allowlist note → dial. On drop or reject → P8. 
 | `egress_off`, `egress_state_stale` | Pilot sharing is switched off right now. We'll show you online again when it's back on. |
 | `egress_budget_exceeded` | You've reached today's sharing limit. Sharing starts again tomorrow. |
 | `egress_allowlist_mismatch` | This device needs an update before it can share. Update the app, then turn sharing back on. |
+| `relay_path_required` | Sharing stopped because the connection left its expected secure route. Turn sharing back on to reconnect. |
 | anything unknown | falls back to `connection_lost` |
 
 "Tomorrow" means the next UTC day, matching `SPIKE_EGRESS_BYTE_CAP`. If the cap reset moves to local time, this line stays the same.
