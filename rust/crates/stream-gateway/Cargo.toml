@@ -23,6 +23,10 @@ hex = "0.4"
 bytes = "1"
 iroh = { workspace = true, optional = true }
 
+[[example]]
+name = "print_dev_endpoint_id"
+required-features = ["iroh"]
+
 [features]
 default = []
 # Alpha-3: opt-in real iroh endpoint (SPIKE_TRANSPORT=iroh_local). Not in default build.

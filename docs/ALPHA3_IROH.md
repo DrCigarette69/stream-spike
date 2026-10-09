@@ -29,6 +29,8 @@ Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` defau
 
 - **Toolchain:** stay on rustc 1.85.1 + `iroh =0.95.1` as long as a `--locked` build passes; if it stops passing, a Rust bump becomes its own slice **A3.R** (toolchain + Dockerfile `RUST_VERSION`) ahead of A3.1.
 - **Gateway endpoint ID:** fixed dev key for Alpha-3; Control-issued IDs come later.
+  - Dev key: `rust/crates/stream-gateway/dev/gateway_dev.key` (32 raw bytes, **DEV-ONLY**, committed; never production). `SPIKE_GATEWAY_ENDPOINT_ID=`
+    `162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1` (derived with iroh 0.95.1 `SecretKey::from_bytes(..).public()`, round-trips via `EndpointId::from_str`; re-derive: `cargo run --locked -p stream-gateway --features iroh --example print_dev_endpoint_id`).
 - **Ticket field format:** set by Platform Engineer, see *A3.3 ticket format* below.
 - **Probe (Stream Architect, 2026-10-08):** PASS — `iroh =0.95.1` (`default-features = false`) builds `--locked` on 1.85.1 and an `empty_builder(RelayMode::Disabled)` endpoint binds `127.0.0.1:0` and starts in a netns with no default route, **only with pins** `ed25519 3.0.0-rc.2`, `pkcs8 0.11.0-rc.8`, `spki 0.8.0-rc.4`, `der 0.8.0-rc.10` (fresh resolve pulls the final 3.0.0/0.11.0/0.8.x, which break `ed25519-dalek 3.0.0-pre.1`); add them to `rust/pin-msrv-deps.sh` when A3.1 adds the `iroh` feature.
 
@@ -37,7 +39,7 @@ Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` defau
 | Slice | Owner | Scope | Green |
 |-------|-------|-------|-------|
 | A3.0 Transport guard | Stream Architect | Spec + `stream-proto::guard` (CIDR allowlist, relay-URL refusal) + table tests; Peer/Gateway call it | **A3.0_PRIVATE_GUARD_GREEN** |
-| A3.1 Gateway endpoint | Platform Engineer | `iroh` behind cargo feature `iroh`; listen on private addr, accept ALPN `stream/tunnel/1`, check remote endpoint ID == ticket's | **A3.1_GATEWAY_ENDPOINT_GREEN** |
+| A3.1 Gateway endpoint | Platform Engineer | `iroh` behind cargo feature `iroh`; listen on private addr, accept ALPN `stream/tunnel/1`, check remote endpoint ID == ticket's; Gateway key = dev key, `SPIKE_GATEWAY_ENDPOINT_ID=162e075fff…` (full in Room defaults) | **A3.1_GATEWAY_ENDPOINT_GREEN** |
 | A3.2 Peer dial | Peer Engineer | Persistent per-peer secret key; dial Gateway by endpoint ID + direct addrs; ISP ack/consent gate **before** dial; kill-switch closes conn ≤2 s; egress floor unchanged | **A3.2_PEER_DIAL_GREEN** |
 | A3.3 Control endpoint IDs / tickets | Platform Engineer | Python Control: Peer registers endpoint ID; `AUTH_TICKET` binds `endpoint_id`; hands Peer the Gateway endpoint ID + direct addrs (env override `SPIKE_IROH_GATEWAY_ADDR`) | **A3.3_TICKET_BIND_GREEN** (incl. mismatched ID refused) |
 | A3.4 Multi-node net | Platform Engineer | `scripts/a3_netns_up.sh` / `_down.sh`: `br-a3`, `ns-gw` `.1`, `ns-peer-a` `.11`, `ns-peer-b` `.12`; client session lands on each Peer; kill one → other still serves. Compose variant is stretch (see risks) | **A3.4_MULTINODE_GREEN** |
@@ -53,7 +55,7 @@ The existing `AUTH_TICKET` fields stay unchanged. `iroh_local` adds three:
 | Field | Type | Rule |
 |-------|------|------|
 | `peer_endpoint_id` | string | iroh `EndpointId` in its canonical `Display` form; must round-trip through `FromStr` to the same ID |
-| `gateway_endpoint_id` | string | same encoding; the fixed dev key for Alpha-3 |
+| `gateway_endpoint_id` | string | same encoding; the fixed dev key for Alpha-3 (`162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1`) |
 | `direct_addrs` | list of `"ip:port"` | every entry must pass the A3.0 private-address guard; one public entry fails the whole ticket |
 
 - **Control** refuses to issue a ticket when the Peer's endpoint ID is missing or does not parse, with reason `endpoint_bind_required`. An empty `direct_addrs` list is refused with its own reason, `direct_addrs_required`. Guard failures pass the A3.0 reason through unchanged (`public_addr`, `allowlist_miss`, and so on). `SPIKE_IROH_GATEWAY_ADDR` overrides `direct_addrs`, but it still goes through the guard.

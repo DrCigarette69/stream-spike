@@ -10,6 +10,9 @@ Workspace members: `stream-proto`, `stream-peer`, `stream-gateway`.
   RustCrypto rc pins required by iroh 0.95.1 (`ed25519-dalek 3.0.0-pre.1`), applied in `pin-msrv-deps.sh`:
   `ed25519 3.0.0-rc.2`, `pkcs8 0.11.0-rc.8`, `spki 0.8.0-rc.4`, `der 0.8.0-rc.10`.
   `Cargo.lock` has one owner (Platform); commit it with git, not MCP. See `docs/ALPHA3_IROH.md`.
+- **Alpha-3 Gateway dev key (DEV-ONLY, never production):** `crates/stream-gateway/dev/gateway_dev.key`
+  → `SPIKE_GATEWAY_ENDPOINT_ID=162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1`
+  (`cargo run --locked -p stream-gateway --features iroh --example print_dev_endpoint_id`). See `crates/stream-gateway/dev/README.md`.
 
 ```bash
 cd rust && cargo check
