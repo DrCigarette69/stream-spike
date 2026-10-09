@@ -179,19 +179,24 @@ def _run_netns_smoke(tag, title, script, marker, needs=("cargo", "sudo"), strict
     unless SPIKE_IMPL=rust or SPIKE_A3=1 (then it fails).
 
     `needs` / `strict_env` let A4 smokes reuse it (a40: needs sudo + docker, strict under SPIKE_A4=1).
+    `strict_env` may be a tuple (strict if any is "1"). `marker` may be a tuple of accepted green
+    markers (first match wins and is printed in the PASS line), e.g. a44 part 1 / final.
 
     Returns ("pass", combined_output) or ("skip", ""); failures raise SystemExit."""
     import shutil
 
     print(f"\n=== {script} ({title}) ===", flush=True)
     impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
-    strict = impl == "rust" or os.environ.get(strict_env, "").strip() == "1"
-    why = "SPIKE_IMPL=rust" if impl == "rust" else f"{strict_env}=1"
+    envs = (strict_env,) if isinstance(strict_env, str) else tuple(strict_env)
+    hit = [e for e in envs if os.environ.get(e, "").strip() == "1"]
+    strict = impl == "rust" or bool(hit)
+    why = "SPIKE_IMPL=rust" if impl == "rust" else (f"{hit[0]}=1" if hit else "")
+    set_hint = " or ".join(f"{e}=1" for e in envs)
 
     def unavailable(reason):
         if strict:
             raise SystemExit(f"FAIL {tag}: {reason} but {why}")
-        print(f"SKIP {tag} {script}: {reason} (set {strict_env}=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
+        print(f"SKIP {tag} {script}: {reason} (set {set_hint} or SPIKE_IMPL=rust to make this fatal)", flush=True)
         return "skip", ""
 
     if "cargo" in needs and shutil.which("cargo") is None:
@@ -216,10 +221,13 @@ def _run_netns_smoke(tag, title, script, marker, needs=("cargo", "sudo"), strict
     )
     sys.stdout.write(p.stdout)
     sys.stdout.flush()
-    green = any(l.strip() == marker for l in p.stdout.splitlines())
+    markers = (marker,) if isinstance(marker, str) else tuple(marker)
+    lines = {l.strip() for l in p.stdout.splitlines()}
+    matched = next((m for m in markers if m in lines), None)
+    green = matched is not None
     if p.returncode != 0 or not green:
         raise SystemExit(f"FAIL {script} (rc={p.returncode}, green_marker={green})")
-    print(f"PASS {script}", flush=True)
+    print(f"PASS {script}" + (f" (marker: {matched})" if len(markers) > 1 else ""), flush=True)
     return "pass", p.stdout
 
 
@@ -228,6 +236,19 @@ def run_a40_compose_guard():
     Needs sudo docker; SKIP without it unless SPIKE_A4=1 / SPIKE_IMPL=rust."""
     return _run_netns_smoke("a40", "A4.0", "a40_compose_guard_smoke", "A4.0_COMPOSE_GUARD_GREEN",
                             needs=("sudo", "docker"), strict_env="SPIKE_A4")
+
+
+# A4.4: Peer ships the final marker with part 2; until then part 1 is accepted. Final listed first
+# so it wins when both are printed. To require the final marker, drop the PART1 entry.
+A44_MARKERS = ("A4.4_PEER_EGRESS_GREEN", "A4.4_PEER_EGRESS_PART1_GREEN")
+
+
+def run_a44_peer_egress():
+    """A4.4 Peer pilot egress smoke (Peer's scripts/a44_peer_egress_smoke.py): netns, no default
+    route, TEST-NET-2 stand-in 198.51.100.10:443. Needs cargo + sudo -n; SKIP without them unless
+    SPIKE_IMPL=rust / SPIKE_A3=1 / SPIKE_A4=1 (then FAIL)."""
+    return _run_netns_smoke("a44", "A4.4", "a44_peer_egress_smoke", A44_MARKERS,
+                            needs=("cargo", "sudo"), strict_env=("SPIKE_A3", "SPIKE_A4"))
 
 
 def run_a41_pilot_guard():
@@ -544,6 +565,9 @@ def main():
         return 0
     if mode in ("a40", "compose-guard", "compose_guard"):
         run_a40_compose_guard()
+        return 0
+    if mode in ("a44", "peer-egress", "peer_egress"):
+        run_a44_peer_egress()
         return 0
     if mode in ("a41", "pilot-guard", "pilot_guard"):
         run_a41_pilot_guard()

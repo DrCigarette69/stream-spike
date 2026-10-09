@@ -286,3 +286,17 @@ python3 scripts/spike_private_guard.py --pilot                             # Pyt
 - Rust: `rust/crates/stream-proto/src/guard/pilot.rs` (re-exported from `stream_proto::guard`). Python: A4.1 section of `scripts/spike_private_guard.py`.
 - Reasons: `relay_config`, `relay_required`, `egress_allowlist_config`, `egress_not_allowlisted`, `egress_resolved_non_public`, `egress_resolve_failed`, `egress_off`, `egress_allowlist_mismatch`, `egress_budget_exceeded`, `transport_not_pilot`, `stripe_live_key_refused`. Log line `a4_refuse_<reason>:<detail>`.
 - Missing `cargo` → Rust half skipped with a message, unless `SPIKE_IMPL=rust` or `SPIKE_A4=1` (then `FAIL a41`). `a30` is unchanged (its `guard` filter now also runs the pilot tests).
+
+## Alpha-4 Peer pilot egress (A4.4)
+
+Peer's smoke `scripts/a44_peer_egress_smoke.py`, wrapped with the shared smoke helper. **Opt-in, not in `all`.** Needs `cargo` + `sudo -n`.
+
+```bash
+python3 scripts/run_local_asserts.py a44               # → A4.4_PEER_EGRESS_PART1_GREEN today (aliases: peer-egress, peer_egress)
+python3 scripts/a44_peer_egress_smoke.py               # the smoke directly
+```
+
+- Runs the stream-peer `a44_netns_stand_in` test in a throwaway netns with only `lo` (+ stand-in `198.51.100.10/32`) and **no default route**; injected resolver, `a4_local` lane. No internet.
+- Proves: allowlisted name → pinned `198.51.100.10:443` + echo (bytes counted both ways); metadata answer → `egress_resolved_non_public`; other port → `egress_not_allowlisted`; Control silent → stale → stream closed ≤5 s and P8.
+- **Markers:** the runner accepts `A4.4_PEER_EGRESS_GREEN` (final, after part 2) or `A4.4_PEER_EGRESS_PART1_GREEN`, and prints which one matched: `PASS a44_peer_egress_smoke (marker: ...)`. To require the final marker, drop the PART1 entry from `A44_MARKERS` in `run_local_asserts.py`.
+- Missing `cargo` / `sudo -n` → `SKIP a44 ...` (exit 0), unless `SPIKE_IMPL=rust`, `SPIKE_A3=1` or `SPIKE_A4=1` → `FAIL a44: ...` (exit 1).
