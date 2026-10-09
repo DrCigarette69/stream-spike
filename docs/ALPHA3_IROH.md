@@ -12,7 +12,7 @@ Today `iroh_loopback` (A1.1) is **not real Iroh**: it is the fake-relay newline-
 | Env | `SPIKE_TRANSPORT=iroh_loopback` | `SPIKE_TRANSPORT=iroh_local` (Rust only) |
 | Stack | TCP + JSON frames | `iroh` QUIC endpoint, ALPN `stream/tunnel/1`, frames on a bi-stream |
 | Addressing | `127.0.0.1:9101` | endpoint ID + **direct private addrs only** (e.g. `10.73.0.0/24`) |
-| Relay / discovery | — | `RelayMode::Disabled`, no DNS/pkarr/mDNS discovery, no portmapper |
+| Relay / discovery | — | `RelayMode::Disabled`, no DNS/pkarr/mDNS discovery, portmapper cannot be disabled in 0.95.1 (netns with no default route blocks it) |
 | Topology | 1 Peer + 1 Gateway, same netns | 1 Gateway + ≥2 Peers, each in its own `ip netns`, veth to bridge `br-a3` |
 
 Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` default and refuse `iroh_local` with a clear error.
@@ -62,7 +62,7 @@ Done = A3.0–A3.5 green on one tip, existing five greens unchanged, A3.6 option
 ## Risks / open questions
 
 1. **iroh vs rustc 1.85.1.** `iroh` 1.x and 0.96+ need rustc ≥1.89/1.91; **0.95.1 is the last on 1.85**. Pin `iroh =0.95.1` (stale API) **or** bump toolchain + Dockerfile `RUST_VERSION` (touches the A2 lock pin). Proposal: pin 0.95.1 for A3, bump in A4.
-2. **Default builder phones home.** iroh's default builder uses n0 relays, DNS/pkarr discovery and portmapper/net-report probes. Must use the empty builder with `RelayMode::Disabled`, discovery off, portmapper feature off; no-default-route netns is the backstop.
+2. **Default builder phones home.** iroh's default builder uses n0 relays, DNS/pkarr discovery and portmapper/net-report probes. Must use the empty builder with `RelayMode::Disabled`, discovery off (`clear_discovery()`), `default-features = false`. Portmapper is a hard dependency in 0.95.1 with no off switch, so the no-default-route netns is the **required** guard, not just a backstop; A3.4 must keep every node in one.
 3. **Network substrate.** `docker-compose.yml` notes the box's Docker bridge drops inter-container TCP (hence `network_mode: host`). UDP/QUIC over bridge is unproven, so `ip netns` (needs `sudo`, works on this box) is primary; compose multi-node is stretch.
 4. **Ticket ↔ endpoint ID binding.** Ticket field name/format in `stream-proto` and whether the Gateway endpoint ID is static (dev key file) or Control-issued per session.
 5. **Not simulated:** NAT, hole-punching, packet loss, real relays, WAN. A3 says nothing about real-world reachability.
