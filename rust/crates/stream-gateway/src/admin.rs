@@ -40,6 +40,7 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
         "alpn": ALPN,
         "transport": st.transport,
         "relay_listen": st.relay_listen,
+        "gateway_endpoint_id": st.gateway_endpoint_id,
         "hardening": HARDENING,
     }))
 }

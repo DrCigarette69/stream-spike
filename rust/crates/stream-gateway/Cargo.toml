@@ -27,6 +27,10 @@ iroh = { workspace = true, optional = true }
 name = "print_dev_endpoint_id"
 required-features = ["iroh"]
 
+[[example]]
+name = "a31_test_client"
+required-features = ["iroh"]
+
 [features]
 default = []
 # Alpha-3: opt-in real iroh endpoint (SPIKE_TRANSPORT=iroh_local). Not in default build.

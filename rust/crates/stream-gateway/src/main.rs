@@ -3,7 +3,10 @@
 
 mod admin;
 mod config;
+mod conn;
 mod control;
+#[cfg(feature = "iroh")]
+mod iroh_local;
 mod meter;
 mod relay;
 mod state;
@@ -28,14 +31,35 @@ async fn main() {
         }
     };
 
-    let st = AppState::new(
+    #[allow(unused_mut)]
+    let mut st = AppState::new(
         cfg.control_url.clone(),
         cfg.transport.clone(),
         cfg.relay_listen_display(),
     );
 
-    // Fake relay / iroh loopback accept loop
-    {
+    if cfg.is_iroh_local() {
+        // A3.1: real iroh endpoint replaces the TCP relay listener.
+        #[cfg(feature = "iroh")]
+        {
+            let icfg = iroh_local::config_from_env().unwrap_or_else(|e| {
+                eprintln!("iroh_local refused: {e}");
+                std::process::exit(2);
+            });
+            let ep = iroh_local::bind(&icfg).await.unwrap_or_else(|e| {
+                eprintln!("iroh_local refused: {e}");
+                std::process::exit(2);
+            });
+            st.gateway_endpoint_id = Some(ep.id().to_string());
+            st.relay_listen = iroh_local::advertised_addr(&ep, &icfg).to_string();
+            println!(
+                "IROH_LOCAL_READY endpoint_id={} direct_addr={}",
+                ep.id(),
+                st.relay_listen
+            );
+            tokio::spawn(iroh_local::run_accept(st.clone(), ep));
+        }
+    } else {
         let st_relay = st.clone();
         let relay_addr = cfg.relay_listen;
         tokio::spawn(async move {

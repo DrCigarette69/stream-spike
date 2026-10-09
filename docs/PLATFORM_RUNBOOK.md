@@ -193,3 +193,36 @@ curl -s http://127.0.0.1:9200/health
 ```
 
 Override file: `docker-compose.rust.yml` (does not change default Python compose). Healthchecks use `curl` (Rust images have no Python). Commit `rust/Cargo.lock` (or run `./pin-msrv-deps.sh` if missing).
+
+## A3.1 Gateway iroh endpoint (`SPIKE_TRANSPORT=iroh_local`, TOM-14)
+
+Opt-in, Rust-only, behind `cargo build --locked -p stream-gateway --features iroh`. Without the feature, `SPIKE_TRANSPORT=iroh_local` exits 1 with a clear error. `fake_relay` / `iroh_loopback` are unchanged.
+
+- **Endpoint:** iroh 0.95.1 `Endpoint::empty_builder(RelayMode::Disabled)` + `clear_discovery()`, ALPN `stream/tunnel/1`, secret key from the DEV-ONLY key file. The other address family is pinned to loopback, never the `0.0.0.0`/`[::]` default. If the requested port is busy, the Gateway refuses instead of taking iroh's random-port fallback.
+- **Guards (refuse before bind, exit 2):** listen must pass `stream_proto::guard::check_ip` (env allowlist `SPIKE_IROH_ALLOW_CIDRS`, default `10.73.0.0/24,127.0.0.0/8`); `SPIKE_IROH_RELAY_URL` set → `relay_refused`; `SPIKE_IROH_DISCOVERY` truthy → `discovery_refused`. Bound sockets are re-checked as private.
+- **Must run in a no-default-route netns:** the iroh 0.95.1 portmapper can't be turned off.
+
+| Env | Default |
+|-----|---------|
+| `SPIKE_TRANSPORT` | `iroh_local` to enable |
+| `SPIKE_IROH_LISTEN` | `127.0.0.1:9102` (A3 netns: `10.73.0.1:9102`) |
+| `SPIKE_GATEWAY_KEY_PATH` | `rust/crates/stream-gateway/dev/gateway_dev.key` (32 raw bytes; 0644 from git is tolerated with a warning) |
+| `SPIKE_GATEWAY_ENDPOINT_ID` | optional; if set, it must match the key, or the Gateway refuses to start. Dev value `162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1` |
+
+On start, stdout prints `IROH_LOCAL_READY endpoint_id=<id> direct_addr=<ip:port>`. `/health` adds `"transport":"iroh_local"`, `"gateway_endpoint_id"` and `"relay_listen"` (the advertised direct addr).
+
+**Framing (Peer must match):** the Peer dials `EndpointAddr(gateway_id).with_ip_addr(direct_addr)` with ALPN `stream/tunnel/1` and opens **one** bi stream (`open_bi`, Peer side). It then speaks the fake_relay NDJSON unchanged, starting with Peer→Gateway `HELLO`. The Gateway answers `HELLO_OK`, then `AUTH_TICKET` per stream, and the Peer replies `AUTH_OK`. `OPEN`/`BYTES`/`CLOSE` are unchanged. Note that quinn only surfaces the stream to the Gateway after the Peer writes on it, so send HELLO right after `open_bi`.
+
+**Endpoint binding:** the Gateway treats the QUIC-authenticated remote `EndpointId` as the truth.
+- A HELLO whose `endpoint_id` differs gets `ERR endpoint_mismatch` + close. An empty `endpoint_id` is filled in from the auth.
+- Before each AUTH_TICKET, the ticket's `payload.peer_endpoint_id` must parse and equal the remote id:
+  - mismatch → `{"type":"AUTH_REJECT","error":"endpoint_mismatch","reason":"endpoint_mismatch","stream_id":…}`, then the stream finishes and the connection closes with app code 1, reason `endpoint_mismatch`. `/gw/start` returns 403 `endpoint_mismatch`.
+  - missing or unparseable → same, with reason `endpoint_bind_required`.
+
+Proof (box user with sudo; builds the iroh variant into `rust/target/iroh` so `rust/target/debug` stays the default build):
+
+```bash
+python3 scripts/a31_gateway_endpoint_smoke.py   # → A3.1_GATEWAY_ENDPOINT_GREEN
+```
+
+The smoke makes a throwaway netns with only `lo` (plus `10.73.0.1/24` on lo) and no default route. Inside it, it runs Control, the Gateway and `examples/a31_test_client` (random key; refuses a public `--direct-addr` / any `--relay-url` before dialing). It checks the gateway refusals, `/health`, the good ticket → AUTH_OK/OPEN, the mismatched ticket → AUTH_REJECT `endpoint_mismatch` + close, and the HELLO mismatch. Then it deletes the netns.

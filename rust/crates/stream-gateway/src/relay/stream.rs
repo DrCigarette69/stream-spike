@@ -17,7 +17,7 @@ pub async fn drop_peer(st: &AppState, peer_id: &str, reason: &str) {
     if let Some(meta) = meta {
         meta.dead.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut s) = meta.sock.try_lock() {
-            let _ = s.shutdown().await;
+            s.close_with(reason).await;
         }
         tracing::info!("peer dropped {peer_id} {reason}");
     }
@@ -41,13 +41,35 @@ pub async fn open_stream_to_peer(
     };
 
     let mut g = meta.sock.lock().await;
+
+    // A3.1/A3.3: on iroh_local the ticket must bind the authenticated remote EndpointId.
+    if let Some(auth) = meta.auth_endpoint_id.as_deref() {
+        if let Err(reason) = ticket_binding(auth, ticket_json) {
+            let frame = serde_json::json!({
+                "type": "AUTH_REJECT",
+                "error": reason,
+                "reason": reason,
+                "stream_id": stream_id,
+            });
+            if let Ok(bytes) = ndjson_line(&frame) {
+                let _ = g.write_all(&bytes).await;
+                let _ = g.flush().await;
+            }
+            g.close_with(reason).await;
+            drop(g);
+            drop_peer(st, peer_id, reason).await;
+            tracing::info!("AUTH_REJECT {reason} peer={peer_id} remote={auth}");
+            return (false, reason.to_string());
+        }
+    }
+
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let frame = AuthTicketFrame::new(ALPN, ticket_json, stream_id, dest_host, dest_port);
         g.write_all(&ndjson_line(&frame).map_err(|e| e.to_string())?)
             .await
             .map_err(|e| e.to_string())?;
 
-        let line = read_line(&mut g).await.map_err(|e| e.to_string())?;
+        let line = read_line(&mut *g).await.map_err(|e| e.to_string())?;
         let resp: serde_json::Value =
             serde_json::from_str(line.trim()).unwrap_or_else(|_| serde_json::json!({}));
         let t = resp.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -121,4 +143,15 @@ pub async fn send_bytes(st: &AppState, peer_id: &str, stream_id: &str, n: u64) -
     g.write_all(&ndjson_line(&frame).map_err(|e| e.to_string())?)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "iroh")]
+fn ticket_binding(auth: &str, ticket_json: &str) -> Result<(), &'static str> {
+    crate::iroh_local::check_ticket_binding(auth, ticket_json)
+}
+
+#[cfg(not(feature = "iroh"))]
+fn ticket_binding(_auth: &str, _ticket_json: &str) -> Result<(), &'static str> {
+    // auth_endpoint_id is only ever set by the iroh transport.
+    Err("endpoint_mismatch")
 }

@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone)]
 pub struct PeerMeta {
-    pub sock: Arc<Mutex<TcpStream>>,
+    pub sock: Arc<Mutex<crate::conn::PeerConn>>,
+    /// A3.1: authenticated iroh remote EndpointId (None on TCP transports).
+    pub auth_endpoint_id: Option<String>,
     pub endpoint_id: String,
     pub isp_ack_version: String,
     pub host_tier: String,
@@ -33,6 +34,8 @@ pub struct AppState {
     pub control_url: String,
     pub transport: String,
     pub relay_listen: String,
+    /// A3.1: this Gateway's iroh EndpointId (iroh_local only).
+    pub gateway_endpoint_id: Option<String>,
 }
 
 impl AppState {
@@ -47,6 +50,7 @@ impl AppState {
             control_url,
             transport,
             relay_listen,
+            gateway_endpoint_id: None,
         }
     }
 }

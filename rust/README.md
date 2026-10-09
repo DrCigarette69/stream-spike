@@ -13,6 +13,7 @@ Workspace members: `stream-proto`, `stream-peer`, `stream-gateway`.
 - **Alpha-3 Gateway dev key (DEV-ONLY, never production):** `crates/stream-gateway/dev/gateway_dev.key`
   → `SPIKE_GATEWAY_ENDPOINT_ID=162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1`
   (`cargo run --locked -p stream-gateway --features iroh --example print_dev_endpoint_id`). See `crates/stream-gateway/dev/README.md`.
+- **A3.1 `SPIKE_TRANSPORT=iroh_local`** (Gateway, `--features iroh`): see `docs/PLATFORM_RUNBOOK.md` § A3.1; proof `python3 scripts/a31_gateway_endpoint_smoke.py`.
 
 ```bash
 cd rust && cargo check
