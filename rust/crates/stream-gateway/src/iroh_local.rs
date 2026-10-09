@@ -247,6 +247,17 @@ mod tests {
         SecretKey::from_bytes(&[seed; 32]).public().to_string()
     }
 
+    /// A4 lock: `iroh_pilot` (iroh/test-utils) makes RelayOnly path selection reachable.
+    /// Compile check only; no endpoint is bound and no behavior changes.
+    #[cfg(feature = "iroh_pilot")]
+    #[test]
+    fn iroh_pilot_relay_only_reachable() {
+        use iroh::endpoint::PathSelection;
+        let _builder = iroh::Endpoint::empty_builder(iroh::RelayMode::Disabled)
+            .path_selection(PathSelection::RelayOnly);
+        assert_ne!(PathSelection::RelayOnly, PathSelection::All);
+    }
+
     #[test]
     fn binding_ok_mismatch_missing() {
         let a = id(1);

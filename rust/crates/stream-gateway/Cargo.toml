@@ -35,3 +35,9 @@ required-features = ["iroh"]
 default = []
 # Alpha-3: opt-in real iroh endpoint (SPIKE_TRANSPORT=iroh_local). Not in default build.
 iroh = ["dep:iroh"]
+# Alpha-4: iroh_pilot = iroh + iroh test-utils (Builder::path_selection(PathSelection::RelayOnly)).
+iroh_pilot = ["iroh", "iroh/test-utils"]
+# docs/ALPHA4_PILOT.md names the build `--features pilot`; alias until the doc locks one name.
+pilot = ["iroh_pilot"]
+# Alpha-4 on-box lane only (dev relay URL, TEST-NET egress); never in the pilot package.
+a4_local = ["stream-proto/a4_local"]

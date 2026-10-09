@@ -10,3 +10,6 @@ members = [
 # Alpha-3 (A3.1/A3.2): real iroh endpoint, opt-in only. default-features off;
 # relays/discovery are disabled in code. Needs RustCrypto rc pins (see pin-msrv-deps.sh).
 iroh = { version = "=0.95.1", default-features = false }
+# A4.2 self-hosted relay (Platform): server lib/bin, same 0.95.1 that iroh/test-utils already pulls.
+# No member uses it yet, so it adds nothing to the default build.
+iroh-relay = { version = "=0.95.1", default-features = false, features = ["server"] }
