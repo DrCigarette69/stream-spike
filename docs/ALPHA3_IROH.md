@@ -1,0 +1,66 @@
+# Stream Alpha-3 — Iroh past loopback (DRAFT)
+
+**Status:** DRAFT — pending Stream Dev room lock · **Date:** 2026-10-08 CT · **Author:** Stream Architect
+**Base:** `main` @ `01eef77` (Alpha-2 done, rustc 1.85.1, pinned `Cargo.lock`)
+
+## Decision
+
+Today `iroh_loopback` (A1.1) is **not real Iroh**: it is the fake-relay newline-JSON framing over TCP on `127.0.0.1:9101`, and no `iroh` crate is in `rust/`. Alpha-3 replaces it, **behind an opt-in mode**, with a real Iroh QUIC endpoint that dials between **separate processes in separate network namespaces on this one machine**.
+
+| | A1.1 `iroh_loopback` (keep) | A3 `iroh_local` (new, opt-in) |
+|--|--|--|
+| Env | `SPIKE_TRANSPORT=iroh_loopback` | `SPIKE_TRANSPORT=iroh_local` (Rust only) |
+| Stack | TCP + JSON frames | `iroh` QUIC endpoint, ALPN `stream/tunnel/1`, frames on a bi-stream |
+| Addressing | `127.0.0.1:9101` | endpoint ID + **direct private addrs only** (e.g. `10.73.0.0/24`) |
+| Relay / discovery | — | `RelayMode::Disabled`, no DNS/pkarr/mDNS discovery, no portmapper |
+| Topology | 1 Peer + 1 Gateway, same netns | 1 Gateway + ≥2 Peers, each in its own `ip netns`, veth to bridge `br-a3` |
+
+Control stays **Python**. Python Peer/Gateway stay the `SPIKE_IMPL=python` default and refuse `iroh_local` with a clear error.
+
+## Hard rules
+
+- **This box only.** Namespaces have **no default route**; only `br-a3` (`10.73.0.0/24`). Control + test destinations bind `10.73.0.254`.
+- **Private-CIDR guard** (extends A1.1 loopback guard), enforced in Peer **and** Gateway: bind/dial/direct-addr only in `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `::1`, `fd00::/8`; narrowable via `SPIKE_IROH_ALLOW_CIDRS` (default `10.73.0.0/24,127.0.0.0/8`). Anything else → refuse + log `a3_refuse_non_private:<addr>`.
+- **Refuse any relay URL** unless A3.6 is on *and* its host is a guard-allowed IP. n0/community relay hosts and discovery config → refuse at startup.
+- Existing greens unchanged: **SPIKE_DOD_GREEN**, **A1.1_IROH_LOOPBACK_GREEN**, **PEER_ALPHA1_CLI_GREEN**, **A1.3_MOCK_TOPUP_GREEN**, **A2.4_COMPOSE_GREEN** (default and `SPIKE_IMPL=rust`).
+- Stubs / no live Stripe / `[Brand]` not `Stream` in UX. Small commits via `git` CLI.
+
+## Slices & owners
+
+| Slice | Owner | Scope | Green |
+|-------|-------|-------|-------|
+| A3.0 Transport guard | Stream Architect | Spec + `stream-proto::guard` (CIDR allowlist, relay-URL refusal) + table tests; Peer/Gateway call it | **A3.0_PRIVATE_GUARD_GREEN** |
+| A3.1 Gateway endpoint | Platform Engineer | `iroh` behind cargo feature `iroh`; listen on private addr, accept ALPN `stream/tunnel/1`, check remote endpoint ID == ticket's | **A3.1_GATEWAY_ENDPOINT_GREEN** |
+| A3.2 Peer dial | Peer Engineer | Persistent per-peer secret key; dial Gateway by endpoint ID + direct addrs; ISP ack/consent gate **before** dial; kill-switch closes conn ≤2 s; egress floor unchanged | **A3.2_PEER_DIAL_GREEN** |
+| A3.3 Control endpoint IDs / tickets | Platform Engineer | Python Control: Peer registers endpoint ID; `AUTH_TICKET` binds `endpoint_id`; hands Peer the Gateway endpoint ID + direct addrs (env override `SPIKE_IROH_GATEWAY_ADDR`) | **A3.3_TICKET_BIND_GREEN** (incl. mismatched ID refused) |
+| A3.4 Multi-node net | Platform Engineer | `scripts/a3_netns_up.sh` / `_down.sh`: `br-a3`, `ns-gw` `.1`, `ns-peer-a` `.11`, `ns-peer-b` `.12`; client session lands on each Peer; kill one → other still serves. Compose variant is stretch (see risks) | **A3.4_MULTINODE_GREEN** |
+| A3.5 Asserts + demo wiring | Stream Architect | `run_local_asserts.py a3` (A3.0–A3.4 + negatives: public IP dial, n0 relay URL, discovery on, all refused; `ip route` in each ns has no default); `demo_alpha.sh` adds A3 block only when `SPIKE_A3=1` | **A3_IROH_LOCAL_GREEN** |
+| A3.6 Local iroh-relay (optional) | Platform Engineer | Self-hosted `iroh-relay` dev mode on `10.73.0.254` only; used solely if direct path is flaky | **A3.6_LOCAL_RELAY_GREEN** |
+| A3.7 Verify + Linear | Grok Bot | File A3.x issues once locked; re-verify on tip | — |
+| Copy | Stream Designer | **None expected** — transport is invisible; same screens/greps | — |
+
+## Run (target)
+
+```bash
+cd rust && cargo build --locked --features iroh -p stream-peer -p stream-gateway
+sudo bash scripts/a3_netns_up.sh                              # br-a3 + 3 namespaces, no default route
+SPIKE_IMPL=rust python3 scripts/run_local_asserts.py a3      # → A3_IROH_LOCAL_GREEN
+SPIKE_IMPL=rust SPIKE_A3=1 bash scripts/demo_alpha.sh         # Alpha proof + A3 block
+sudo bash scripts/a3_netns_down.sh
+python3 scripts/run_local_asserts.py all                      # default path still → SPIKE_DOD_GREEN
+```
+
+Done = A3.0–A3.5 green on one tip, existing five greens unchanged, A3.6 optional.
+
+## Risks / open questions
+
+1. **iroh vs rustc 1.85.1.** `iroh` 1.x and 0.96+ need rustc ≥1.89/1.91; **0.95.1 is the last on 1.85**. Pin `iroh =0.95.1` (stale API) **or** bump toolchain + Dockerfile `RUST_VERSION` (touches the A2 lock pin). Proposal: pin 0.95.1 for A3, bump in A4.
+2. **Default builder phones home.** iroh's default builder uses n0 relays, DNS/pkarr discovery and portmapper/net-report probes. Must use the empty builder with `RelayMode::Disabled`, discovery off, portmapper feature off; no-default-route netns is the backstop.
+3. **Network substrate.** `docker-compose.yml` notes the box's Docker bridge drops inter-container TCP (hence `network_mode: host`). UDP/QUIC over bridge is unproven, so `ip netns` (needs `sudo`, works on this box) is primary; compose multi-node is stretch.
+4. **Ticket ↔ endpoint ID binding.** Ticket field name/format in `stream-proto` and whether the Gateway endpoint ID is static (dev key file) or Control-issued per session.
+5. **Not simulated:** NAT, hole-punching, packet loss, real relays, WAN. A3 says nothing about real-world reachability.
+6. **Build weight.** `iroh` adds a large dep tree / build time; keep it behind cargo feature `iroh` so A2 builds stay fast and `--locked` keeps working.
+
+## Out of Alpha-3
+
+Community/n0 relays, public discovery, public listen or egress, NAT traversal, mobile peers, Control→Rust (A2.5 / TOM-8), live Stripe/KYC, new UX.
