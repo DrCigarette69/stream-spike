@@ -165,29 +165,29 @@ def run_a30_private_guard():
     print("\nA3.0_PRIVATE_GUARD_GREEN", flush=True)
 
 
-def run_a31_gateway_endpoint():
-    """A3.1 Gateway iroh_local endpoint smoke (Platform's scripts/a31_gateway_endpoint_smoke.py).
+def _run_netns_smoke(tag, title, script, marker):
+    """Run a sudo-netns A3 smoke (a31/a32/a33) as the current user.
 
-    The smoke builds stream-gateway with `--features iroh` into rust/target/iroh, then runs
+    These smokes build stream-gateway `--features iroh` into rust/target/iroh, then run
     Control + Gateway + a test client inside a throwaway `ip netns` (only `lo`, no default
-    route). It calls `sudo` itself for the netns steps and drops back to this user inside, so
-    we invoke it as the current user (no root-owned build artifacts) and only pre-check that
-    non-interactive sudo works. Ports (8080/1080/9102) live inside the private netns, so they
-    never collide with host stacks or SPIKE_PORT_BASE runs; the smoke resets env in the netns.
+    route). They call `sudo` themselves for the netns steps and drop back to this user inside,
+    so we invoke them as the current user (no root-owned build artifacts) and only pre-check
+    that non-interactive sudo works. Their ports live inside the private netns, so they never
+    collide with host stacks or SPIKE_PORT_BASE runs; the smokes reset env in the netns.
 
     Not part of `all` (needs sudo). Skips cleanly when cargo or `sudo -n` is unavailable,
     unless SPIKE_IMPL=rust or SPIKE_A3=1 (then it fails)."""
     import shutil
 
-    print("\n=== a31_gateway_endpoint_smoke (A3.1) ===", flush=True)
+    print(f"\n=== {script} ({title}) ===", flush=True)
     impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
     strict = impl == "rust" or os.environ.get("SPIKE_A3", "").strip() == "1"
     why = "SPIKE_IMPL=rust" if impl == "rust" else "SPIKE_A3=1"
 
     def unavailable(reason):
         if strict:
-            raise SystemExit(f"FAIL a31: {reason} but {why}")
-        print(f"SKIP a31 gateway endpoint smoke: {reason} (set SPIKE_A3=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
+            raise SystemExit(f"FAIL {tag}: {reason} but {why}")
+        print(f"SKIP {tag} {script}: {reason} (set SPIKE_A3=1 or SPIKE_IMPL=rust to make this fatal)", flush=True)
 
     if shutil.which("cargo") is None:
         unavailable("cargo not found")
@@ -207,16 +207,30 @@ def run_a31_gateway_endpoint():
             return
 
     p = subprocess.run(
-        [sys.executable, "-u", str(ROOT / "scripts" / "a31_gateway_endpoint_smoke.py")],
+        [sys.executable, "-u", str(ROOT / "scripts" / f"{script}.py")],
         cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     sys.stdout.write(p.stdout)
     sys.stdout.flush()
-    green = any(l.strip() == "A3.1_GATEWAY_ENDPOINT_GREEN" for l in p.stdout.splitlines())
+    green = any(l.strip() == marker for l in p.stdout.splitlines())
     if p.returncode != 0 or not green:
-        raise SystemExit(f"FAIL a31_gateway_endpoint_smoke (rc={p.returncode}, green_marker={green})")
-    print("PASS a31_gateway_endpoint_smoke", flush=True)
+        raise SystemExit(f"FAIL {script} (rc={p.returncode}, green_marker={green})")
+    print(f"PASS {script}", flush=True)
 
+
+def run_a31_gateway_endpoint():
+    """A3.1 Gateway iroh_local endpoint smoke (Platform's scripts/a31_gateway_endpoint_smoke.py)."""
+    _run_netns_smoke("a31", "A3.1", "a31_gateway_endpoint_smoke", "A3.1_GATEWAY_ENDPOINT_GREEN")
+
+
+def run_a32_peer_dial():
+    """A3.2 Peer iroh_local dial smoke (Peer's scripts/a32_peer_dial_smoke.py)."""
+    _run_netns_smoke("a32", "A3.2", "a32_peer_dial_smoke", "A3.2_PEER_DIAL_GREEN")
+
+
+def run_a33_ticket_bind():
+    """A3.3 Control ticket binding smoke (Platform's scripts/a33_ticket_bind_smoke.py)."""
+    _run_netns_smoke("a33", "A3.3", "a33_ticket_bind_smoke", "A3.3_TICKET_BIND_GREEN")
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
@@ -234,6 +248,12 @@ def main():
         return 0
     if mode in ("a31", "gateway-endpoint", "gateway_endpoint"):
         run_a31_gateway_endpoint()
+        return 0
+    if mode in ("a32", "peer-dial", "peer_dial"):
+        run_a32_peer_dial()
+        return 0
+    if mode in ("a33", "ticket-bind", "ticket_bind"):
+        run_a33_ticket_bind()
         return 0
     env = start_stack()
     grace = ["grace-stop", "assert-grace-ledger"]

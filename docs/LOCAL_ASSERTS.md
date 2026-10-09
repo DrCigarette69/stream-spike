@@ -192,3 +192,30 @@ python3 scripts/a31_gateway_endpoint_smoke.py          # the smoke directly
 - Pass = exit 0 **and** the `A3.1_GATEWAY_ENDPOINT_GREEN` line; prints `PASS a31_gateway_endpoint_smoke`.
 - If `cargo` or non-interactive sudo is missing it prints `SKIP a31 ...` and exits 0, unless `SPIKE_IMPL=rust` or `SPIKE_A3=1` (then `FAIL a31: ...`, exit 1).
 - Proves: good ticket → AUTH_OK/OPEN; mismatched `peer_endpoint_id` → AUTH_REJECT `endpoint_mismatch` + close; HELLO with a foreign `endpoint_id` → ERR `endpoint_mismatch`; Gateway refuses public/wildcard/unparseable listen, relay URL, discovery; non-iroh build refuses `iroh_local`.
+
+## Alpha-3 Peer iroh_local dial (A3.2)
+
+Peer's smoke `scripts/a32_peer_dial_smoke.py` (TOM-15), wrapped like `a31`/`a33` (same runner helper). **Opt-in, not in `all`** (needs sudo for `ip netns`).
+
+```bash
+python3 scripts/run_local_asserts.py a32               # → A3.2_PEER_DIAL_GREEN (aliases: peer-dial, peer_dial)
+python3 scripts/a32_peer_dial_smoke.py                 # the smoke directly
+```
+
+- Builds `stream-gateway --features iroh` and `stream-peer --features iroh_local` into `rust/target/iroh` (plus the default bins), then runs Control (8080), Gateway (1080 / iroh `10.73.0.1:9102`) and Peer (admin 9200, iroh bind `10.73.0.1:0`) inside the netns only; it strips `SPIKE_PORT_BASE`, `SPIKE_ISP_ACK_VERSION`, `SPIKE_P2_CONSENT`. No extra env needed.
+- The smoke uses `sudo -n` itself and has its own identical SKIP/FAIL preflight; the runner pre-checks first, so semantics match `a31`: `SKIP a32 ...` (exit 0) without `cargo`/`sudo -n`, `FAIL a32: ...` (exit 1) under `SPIKE_IMPL=rust` or `SPIKE_A3=1`. Pass = exit 0 **and** the marker, then `PASS a32_peer_dial_smoke`. The smoke's `A3.2_WAITING_GATEWAY` (exit 3) counts as a failure here.
+- Proves: Peer refuses public gateway addr / relay URL / wildcard bind, and a non-iroh build refuses `iroh_local`; no dial before P1 ack + P2 consent (`UX_SCREEN p1_isp_ack`, `UX_SCREEN p2_consent` printed before the dial); dial by endpoint ID + direct addr on `stream/tunnel/1` with HELLO → AUTH_TICKET → OPEN → BYTES → CLOSE using Control-minted tickets; kill drops the Peer < 2 s (`UX_SCREEN p4_kill`) and resume redials; a ticket for key A presented by key B → AUTH_REJECT `endpoint_mismatch`, Peer closes and doesn't retry; persistent key keeps the same endpoint ID across restarts.
+
+## Alpha-3 Control ticket binding (A3.3)
+
+Platform's smoke `scripts/a33_ticket_bind_smoke.py` (TOM-16), wrapped as an assert mode exactly like `a31`/`a32` (same runner helper). **Opt-in, not in `all`** (needs sudo for `ip netns`).
+
+```bash
+python3 scripts/run_local_asserts.py a33               # → A3.3_TICKET_BIND_GREEN (aliases: ticket-bind, ticket_bind)
+python3 scripts/a33_ticket_bind_smoke.py               # the smoke directly
+```
+
+- Reuses the A3.1 harness (same `--features iroh` build into `rust/target/iroh`, same netns with only `lo` + `10.73.0.1/24`, no default route). Control instances on 8080 and 8091–8097 and the Gateway on 1080 / iroh `10.73.0.1:9102` exist only inside the netns; no extra env, ports or build features needed, and `SPIKE_PORT_BASE` does not apply.
+- Same runner semantics as `a31`: `sudo -n true` pre-check (skipped when root), pass = exit 0 **and** the marker line, then `PASS a33_ticket_bind_smoke`. Missing `cargo`/sudo → `SKIP a33 ...` (exit 0), unless `SPIKE_IMPL=rust` or `SPIKE_A3=1` → `FAIL a33: ...` (exit 1).
+- Proves (Control, `SPIKE_TRANSPORT=iroh_local`): 422 `endpoint_bind_required` for missing/malformed peer endpoint ID; `direct_addrs_required` for empty `SPIKE_IROH_GATEWAY_ADDR`; `public_addr` / `allowlist_miss` via the A3.0 guard (`SPIKE_IROH_ALLOW_CIDRS=''` lifts narrowing); non-iroh transports mint unchanged. End-to-end: a Control-minted ticket binds the Gateway-authenticated peer ID → AUTH_TICKET → AUTH_OK → OPEN; a stale ticket after another key takes over the `peer_id` → AUTH_REJECT `endpoint_mismatch` + close.
+- **Known gap (compose):** `control/Dockerfile` does not copy `scripts/spike_private_guard.py`, so Control in compose with `SPIKE_TRANSPORT=iroh_local` refuses to mint with `guard_unavailable`. A3.3 is verified in the host netns only; default (`fake_relay`) compose is unaffected.
