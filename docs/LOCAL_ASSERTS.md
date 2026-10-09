@@ -54,7 +54,45 @@ Use these when debugging one side before full DoD.
 | 8080 | Control |
 | 1080 | Gateway admin HTTP (`/gw/*`) |
 | 9100 | Fake Relay (Peer dials in) |
+| 9101 | Iroh loopback lane (A1.1, `SPIKE_TRANSPORT=iroh_loopback`) |
 | 9200 | Peer admin (`/peer/kill`, health) |
+
+### Concurrent runs: `SPIKE_PORT_BASE`
+
+The box is shared, so two runs on the default ports break each other. Every
+harness script (`run_local_asserts.py`, `platform_smoke.py`, `peer_smoke.py`,
+`iroh_loopback_smoke.py`, `peer_alpha1_cli.py`, `a13_mock_topup_smoke.py`,
+client-cli) resolves ports through [`scripts/spike_ports.py`](../scripts/spike_ports.py):
+
+1. **Explicit env wins** — `SPIKE_LISTEN`, `CONTROL_URL`, `SPIKE_LISTEN_PROXY`,
+   `GATEWAY_PROXY`, `SPIKE_FAKE_RELAY`, `SPIKE_FAKE_RELAY_DIAL`,
+   `SPIKE_IROH_LOOPBACK`, `SPIKE_IROH_LOOPBACK_DIAL`, `SPIKE_PEER_ADMIN`,
+   `PEER_ADMIN` are never overwritten (setdefault semantics).
+2. **Else derived from `SPIKE_PORT_BASE`** (all on 127.0.0.1):
+
+   | Service | Port |
+   |---------|------|
+   | Control | base+0 |
+   | Gateway | base+1 |
+   | Fake Relay | base+2 |
+   | Iroh loopback | base+3 |
+   | Peer admin | base+4 |
+
+3. **Else today's defaults** (8080 / 1080 / 9100 / 9101 / 9200) — unset = unchanged behavior.
+
+URLs follow their listen addr (`CONTROL_URL` from `SPIKE_LISTEN`, etc.) unless set.
+With a non-default Control port the sqlite files get a port suffix
+(`.dod.28080.sqlite`) so runs from one checkout don't clobber each other.
+
+```bash
+python3 scripts/run_local_asserts.py all &                        # 8080...
+SPIKE_PORT_BASE=28080 python3 scripts/run_local_asserts.py all &  # 28080..28084
+SPIKE_PORT_BASE=38080 SPIKE_IMPL=rust python3 scripts/run_local_asserts.py all
+python3 scripts/spike_ports.py   # print the resolved values
+```
+
+Pick a base whose five ports are free (`ss -ltn`). The A1.1 bind guard still
+refuses a non-loopback `SPIKE_IROH_LOOPBACK`. `compose_health.sh` (Docker) stays on fixed ports.
 
 ## Env knobs (common)
 

@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import spike_ports  # noqa: E402  SPIKE_PORT_BASE + explicit-env-wins resolution
 CLI = ROOT / "client-cli" / "main.py"
 procs: list[subprocess.Popen] = []
 
@@ -39,19 +41,13 @@ def cleanup(*_):
 
 
 def start_stack():
-    env = os.environ.copy()
-    db = ROOT / ".dod.sqlite"
+    env = spike_ports.apply(os.environ.copy())  # ports/URLs: setdefault, never overwrite
+    db = spike_ports.db_file(ROOT, ".dod.sqlite", env)
     db.unlink(missing_ok=True)
     env.update(
         {
             "SPIKE_DB": str(db),
-            "SPIKE_LISTEN": "127.0.0.1:8080",
             "SPIKE_TICKET_SECRET": "dev-only-change-me",
-            "CONTROL_URL": "http://127.0.0.1:8080",
-            "SPIKE_LISTEN_PROXY": "127.0.0.1:1080",
-            "SPIKE_FAKE_RELAY": "127.0.0.1:9100",
-            "SPIKE_FAKE_RELAY_DIAL": "127.0.0.1:9100",
-            "SPIKE_PEER_ADMIN": "127.0.0.1:9200",
             "SPIKE_ISP_ACK_VERSION": "v1",
             "SPIKE_HOST_TIER": "always_on",
             "SPIKE_PEER_ID": "peer_demo",
@@ -62,7 +58,6 @@ def start_stack():
         }
     )
     # Control always Python; gateway+peer honor SPIKE_IMPL (python|rust).
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from spike_peer_launch import control_cmd, gateway_cmd, peer_cmd
 
     for argv, cwd in (control_cmd(env), gateway_cmd(env), peer_cmd(env)):
@@ -76,11 +71,9 @@ def start_stack():
             )
         )
         time.sleep(0.4)
-    for url in (
-        "http://127.0.0.1:8080/health",
-        "http://127.0.0.1:1080/health",
-        "http://127.0.0.1:9200/health",
-    ):
+    control, gateway, peer = spike_ports.urls(env)
+    print(f"stack: control={control} gateway={gateway} peer={peer}", flush=True)
+    for url in (control + "/health", gateway + "/health", peer + "/health"):
         for _ in range(50):
             if http_ok(url):
                 break
@@ -91,7 +84,7 @@ def start_stack():
     import urllib.error
     for _ in range(50):
         try:
-            with urllib.request.urlopen("http://127.0.0.1:1080/gw/peers", timeout=2) as r:
+            with urllib.request.urlopen(gateway + "/gw/peers", timeout=2) as r:
                 peers = json.loads(r.read().decode()).get("peers", [])
                 if any(p.get("peer_id") == "peer_demo" for p in peers):
                     return env

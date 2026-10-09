@@ -2,7 +2,7 @@
 """A1.1 — Iroh loopback lane smoke (stubs only; no public egress; not real Iroh).
 
 Opt-in via SPIKE_TRANSPORT=iroh_loopback. Same AUTH_TICKET/ALPN frames as fake Relay,
-bound to 127.0.0.1:9101. Expect: A1.1_IROH_LOOPBACK_GREEN
+bound to 127.0.0.1:9101 (or SPIKE_PORT_BASE+3). Expect: A1.1_IROH_LOOPBACK_GREEN
 """
 from __future__ import annotations
 
@@ -20,9 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spike_peer_launch import control_cmd, gateway_cmd, peer_cmd  # SPIKE_IMPL=rust|python
-CONTROL = "http://127.0.0.1:8080"
-GATEWAY = "http://127.0.0.1:1080"
-PEER = "http://127.0.0.1:9200"
+import spike_ports  # SPIKE_PORT_BASE / explicit env wins / legacy defaults
+CONTROL, GATEWAY, PEER = spike_ports.urls()
 procs: list[subprocess.Popen] = []
 
 
@@ -72,21 +71,15 @@ def wait_ok(url, want_transport=None, timeout=8.0):
 
 
 def start():
-    env = os.environ.copy()
-    db = ROOT / ".a11.sqlite"
+    env = spike_ports.apply(os.environ.copy())
+    db = spike_ports.db_file(ROOT, ".a11.sqlite", env)
     db.unlink(missing_ok=True)
     env.update(
         {
             "SPIKE_DB": str(db),
-            "SPIKE_LISTEN": "127.0.0.1:8080",
             "SPIKE_TICKET_SECRET": "dev-only-change-me",
             "SPIKE_DENYLIST": str(ROOT / "fixtures/denylist.seed.json"),
-            "CONTROL_URL": CONTROL,
             "SPIKE_TRANSPORT": "iroh_loopback",
-            "SPIKE_LISTEN_PROXY": "127.0.0.1:1080",
-            "SPIKE_IROH_LOOPBACK": "127.0.0.1:9101",
-            "SPIKE_IROH_LOOPBACK_DIAL": "127.0.0.1:9101",
-            "SPIKE_PEER_ADMIN": "127.0.0.1:9200",
             "SPIKE_PEER_ID": "peer_demo",
             "SPIKE_ENDPOINT_ID": "iroh_ep_demo_001",
             "SPIKE_ISP_ACK_VERSION": "v1",

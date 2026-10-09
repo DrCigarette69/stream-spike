@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spike_peer_launch import control_cmd, gateway_cmd, peer_cmd
+import spike_ports  # SPIKE_PORT_BASE / explicit env wins / legacy defaults
 CLI = ROOT / "client-cli" / "main.py"
 procs: list[subprocess.Popen] = []
 
@@ -26,27 +27,18 @@ def cleanup(*_):
         except Exception: pass
 
 def start_stack():
-    env = os.environ.copy()
-    db = ROOT / ".a13.sqlite"
+    env = spike_ports.apply(os.environ.copy())  # SPIKE_PORT_BASE / explicit env wins
+    db = spike_ports.db_file(ROOT, ".a13.sqlite", env)
     db.unlink(missing_ok=True)
-    listen = env.get("SPIKE_LISTEN", "127.0.0.1:8080")
-    proxy = env.get("SPIKE_LISTEN_PROXY", "127.0.0.1:1080")
-    relay = env.get("SPIKE_FAKE_RELAY", env.get("SPIKE_FAKE_RELAY_DIAL", "127.0.0.1:9100"))
-    peer = env.get("SPIKE_PEER_ADMIN", "127.0.0.1:9200")
-    ctrl_url = env.get("CONTROL_URL", f"http://{listen}")
-    gw_url = env.get("GATEWAY_PROXY", f"http://{proxy}")
-    peer_url = env.get("PEER_ADMIN", f"http://{peer}")
+    ctrl_url, gw_url, peer_url = spike_ports.urls(env)
     env.update({
-        "SPIKE_DB": str(db), "SPIKE_LISTEN": listen,
+        "SPIKE_DB": str(db),
         "SPIKE_TICKET_SECRET": env.get("SPIKE_TICKET_SECRET", "dev-only-change-me"),
         "SPIKE_DENYLIST": str(ROOT / "fixtures/denylist.seed.json"),
-        "CONTROL_URL": ctrl_url, "SPIKE_LISTEN_PROXY": proxy,
-        "SPIKE_FAKE_RELAY": relay, "SPIKE_FAKE_RELAY_DIAL": relay,
-        "SPIKE_PEER_ADMIN": peer, "SPIKE_ISP_ACK_VERSION": "v1",
+        "SPIKE_ISP_ACK_VERSION": "v1",
         "SPIKE_HOST_TIER": "always_on", "SPIKE_PEER_ID": "peer_demo",
         "SPIKE_ENDPOINT_ID": "iroh_ep_demo_001", "SPIKE_HEARTBEAT_S": "2",
         "CLI_KEEP_UP": "1", "FIXTURES": str(ROOT / "fixtures"),
-        "GATEWAY_PROXY": gw_url, "PEER_ADMIN": peer_url,
     })
     for argv, cwd in (control_cmd(env), gateway_cmd(env), peer_cmd(env)):
         procs.append(subprocess.Popen(argv, cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))

@@ -14,11 +14,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(os.environ.get("FIXTURES", str(ROOT / "fixtures")))
-CONTROL = os.environ.get("CONTROL_URL", "http://127.0.0.1:8080")
-GATEWAY = os.environ.get("GATEWAY_PROXY", "http://127.0.0.1:1080")
-if not GATEWAY.startswith("http"):
-    GATEWAY = "http://" + GATEWAY
-PEER = os.environ.get("PEER_ADMIN", "http://127.0.0.1:9200")
+sys.path.insert(0, str(ROOT / "scripts"))
+import spike_ports  # noqa: E402  explicit env > SPIKE_PORT_BASE > 8080/1080/9200
+
+CONTROL, GATEWAY, PEER = spike_ports.urls()
 
 procs: list[subprocess.Popen] = []
 _managed = False
@@ -88,19 +87,13 @@ def ensure_stack():
     except Exception:
         pass
 
-    env = os.environ.copy()
-    db = ROOT / ".cli.sqlite"
+    env = spike_ports.apply(os.environ.copy())
+    db = spike_ports.db_file(ROOT, ".cli.sqlite", env)
     db.unlink(missing_ok=True)
     env.update(
         {
             "SPIKE_DB": str(db),
-            "SPIKE_LISTEN": "127.0.0.1:8080",
             "SPIKE_TICKET_SECRET": "dev-only-change-me",
-            "CONTROL_URL": CONTROL,
-            "SPIKE_LISTEN_PROXY": "127.0.0.1:1080",
-            "SPIKE_FAKE_RELAY": "127.0.0.1:9100",
-            "SPIKE_FAKE_RELAY_DIAL": "127.0.0.1:9100",
-            "SPIKE_PEER_ADMIN": "127.0.0.1:9200",
             "SPIKE_ISP_ACK_VERSION": "v1",
             "SPIKE_HOST_TIER": "always_on",
             "SPIKE_PEER_ID": "peer_demo",

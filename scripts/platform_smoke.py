@@ -18,9 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spike_peer_launch import control_cmd, gateway_cmd  # SPIKE_IMPL=rust|python
-CONTROL = "http://127.0.0.1:8080"
-GATEWAY = "http://127.0.0.1:1080"
-RELAY = ("127.0.0.1", 9100)
+import spike_ports  # SPIKE_PORT_BASE / explicit env wins / legacy defaults
+CONTROL, GATEWAY, _ = spike_ports.urls()
+RELAY = spike_ports.relay_dial()
 procs: list[subprocess.Popen] = []
 
 
@@ -37,13 +37,9 @@ def http(method, url, body=None):
 
 
 def start_services():
-    env = os.environ.copy()
-    env["SPIKE_DB"] = str(ROOT / ".smoke.sqlite")
-    env["SPIKE_LISTEN"] = "127.0.0.1:8080"
+    env = spike_ports.apply(os.environ.copy())
+    env["SPIKE_DB"] = str(spike_ports.db_file(ROOT, ".smoke.sqlite", env))
     env["SPIKE_TICKET_SECRET"] = "dev-only-change-me"
-    env["CONTROL_URL"] = CONTROL
-    env["SPIKE_LISTEN_PROXY"] = "127.0.0.1:1080"
-    env["SPIKE_FAKE_RELAY"] = "127.0.0.1:9100"
     Path(env["SPIKE_DB"]).unlink(missing_ok=True)
     for argv, cwd in (control_cmd(env), gateway_cmd(env)):
         procs.append(
