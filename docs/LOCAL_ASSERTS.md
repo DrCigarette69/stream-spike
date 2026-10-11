@@ -105,6 +105,10 @@ refuses a non-loopback `SPIKE_IROH_LOOPBACK`. `compose_health.sh` (Docker) stays
 | `FIXTURES` | Path to `fixtures/` for CLI copy asserts |
 
 
+### Stripe credentials are scrubbed (hermetic runs)
+
+The box may export `STRIPE_TEST_SECRET_KEY`. `run_local_asserts.py` removes `STRIPE_TEST_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` from the environment of every child in **every mode** (prints only the variable names, never values), so Control always starts in mock top-up mode. `all` proves it: `OK control stripe mode: mock (/v1/topup/test -> 409 stripe_test_unavailable)`. The single exception is `a46` with `SPIKE_A46_STRIPE_LIVE=1`. `scripts/demo_alpha.sh` unsets both too (it also starts Control outside the runner).
+
 ## SPIKE_IMPL (A2.3)
 
 | Value | Behavior |
@@ -271,6 +275,7 @@ python3 scripts/run_local_asserts.py a40               # → A4.0_COMPOSE_GUARD_
 
 - Missing `docker` / `sudo -n` → `SKIP a40 ...` (exit 0), unless `SPIKE_A4=1` or `SPIKE_IMPL=rust` → `FAIL a40: ...` (exit 1). Uses its own compose project (`a40-<port>`, `SPIKE_PORT_BASE` or 27310).
 - The smoke checks the image's `spike_private_guard.py` is byte-identical to `scripts/`; after the guard changes, rebuild the Control image.
+- **Local Docker only.** Any docker-using mode (today `a40`) FAILs (exit 1, before any SKIP) if `DOCKER_HOST` is set to anything but a `unix://` socket, or `DOCKER_CONTEXT` names a non-default context; it never falls back to TCP (there may be an unauthenticated engine on `:2375` that isn't ours; never point at it). It also checks the user and root (`sudo docker`) context endpoints are `unix://` (`docker context inspect`, local config only), and children get `DOCKER_HOST=unix:///var/run/docker.sock` with `DOCKER_CONTEXT` removed.
 
 ## Alpha-4 pilot guard (A4.1)
 
@@ -301,6 +306,34 @@ python3 scripts/a42_self_relay_smoke.py                # the smoke directly
 - Proves: no `insecure_skip_relay_cert_verify(` in the tree; Gateway refuses unset/n0/other allow URL, non-relay-only path, discovery and a non-pilot build; relay-only connect (UDP datagrams 0/0 on both ends); Control-minted ticket with `relay_url` + empty `direct_addrs` → AUTH_OK → OPEN; relay killed → live conn drops, new dial fails closed, Gateway start refused.
 - Single instance: holds `/tmp/stream-spike-a42.lock` and fails if another a42 run holds it.
 - Missing `cargo` / `sudo -n` → `SKIP a42 ...` (exit 0), unless `SPIKE_IMPL=rust`, `SPIKE_A3=1` or `SPIKE_A4=1` → `FAIL a42: ...` (exit 1).
+
+## Alpha-4 Gateway egress + kill propagation (A4.3)
+
+Platform's smoke `scripts/a43_gateway_egress_smoke.py`, wrapped with the shared smoke helper. **Opt-in, not in `all`.** Needs `cargo` + `sudo -n`. Details: [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) (A4.3).
+
+```bash
+python3 scripts/run_local_asserts.py a43               # → A4.3_GATEWAY_EGRESS_GREEN (aliases: gateway-egress, gateway_egress)
+python3 scripts/a43_gateway_egress_smoke.py            # the smoke directly
+```
+
+- Topology: the A4.2 relay-only netns (`a42-gw` / `a42-relay` / `a42-peer`, via `scripts/a43_netns_up.sh`) plus `a43-site`, a TLS stand-in at `198.51.100.10:443` (TEST-NET-2) that only `a42-peer` can reach. Control runs with `SPIKE_A4_LANE=local`; allowlist `echo.example.com:443=198.51.100.10` (pinned) + `priv.example.com:443` (resolves private → Peer refuses). No default route, no internet.
+- Proves (Gateway, test-client Peer): default OFF → `egress_off` at the Gateway, nothing forwarded; `local_off` / `no_state`; non-local Control switch refused; non-allowlisted dest → `egress_not_allowlisted` at the Gateway; allowlisted TLS GET end to end over the relay (300 KB sha256-checked); Peer `CLOSE {reason}` accepted; flag off / Control frozen (stale) / allowlist version mismatch → held stream closed ≤5 s with the matching reason; byte cap → `egress_budget_exceeded`.
+- Proves (real `stream-peer --features iroh_pilot,a4_local`): Gateway OPEN → Peer dials the pinned stand-in; `priv.example.com` → `egress_resolved_non_public` at the Peer; flag off → closed ≤5 s and P8 `egress_off`; different Peer allowlist → `egress_allowlist_mismatch`.
+- Shares `/tmp/stream-spike-a42.lock` with `a42` (same netns names): run them one after the other; a held lock fails the run.
+- Missing `cargo` / `sudo -n` → `SKIP a43 ...` (exit 0), unless `SPIKE_IMPL=rust`, `SPIKE_A3=1` or `SPIKE_A4=1` → `FAIL a43: ...` (exit 1).
+
+## Alpha-4 Stripe test top-up (A4.6)
+
+Platform's smoke `scripts/a46_stripe_test_topup_smoke.py`. **Opt-in, not in `all`.** Python only: loopback ports, no `sudo`, no `cargo`. Details: [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) (A4.6).
+
+```bash
+python3 scripts/run_local_asserts.py a46                              # → A4.6_STRIPE_TEST_TOPUP_GREEN, lane B skipped (aliases: stripe-test-topup, stripe_test_topup)
+SPIKE_A46_STRIPE_LIVE=1 python3 scripts/run_local_asserts.py a46      # opt-in: also lane B against Stripe's TEST API
+```
+
+- Lane 0/A always run, network-free: `sk_live_…` or `pk_test_…` key → Control refuses to start; no key → `/v1/topup/test` 409 `stripe_test_unavailable` and mock top-up unchanged; locally signed webhook events against a loopback Stripe fake (bad / expired signature, amount / currency / livemode mismatch refused; credit once; replay idempotent; `payment_failed` no credit).
+- Lane B (real `api.stripe.com` TEST mode, `pm_card_visa`) needs `STRIPE_TEST_SECRET_KEY=sk_test_…` **and** `SPIKE_A46_STRIPE_LIVE=1`. Without the opt-in the runner scrubs the key, so lane B prints `A46_LANE_B=skipped:…` and nothing leaves the box. The PASS line says which: `PASS a46_stripe_test_topup_smoke (lane B: ran|skipped:…)`.
+- Lane B is never required, including under `SPIKE_A4=1`. Key values are never printed (the smoke and the runner both redact).
 
 ## Alpha-4 Peer pilot egress (A4.4)
 

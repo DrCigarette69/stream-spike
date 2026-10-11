@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import json
 from pathlib import Path
@@ -38,6 +39,76 @@ def cleanup(*_):
             p.kill()
         except Exception:
             pass
+
+
+# Hermeticity: the box may export real Stripe TEST credentials. Children (Control, smokes) inherit
+# os.environ, so scrub them in every mode; only `a46` with SPIKE_A46_STRIPE_LIVE=1 keeps them
+# (opt-in to calling Stripe's test API from the box). Values are never printed.
+STRIPE_SECRET_ENVS = ("STRIPE_TEST_SECRET_KEY", "STRIPE_WEBHOOK_SECRET")
+A46_MODES = ("a46", "stripe-test-topup", "stripe_test_topup")
+
+
+def scrub_stripe_env(mode):
+    """Remove STRIPE_SECRET_ENVS from os.environ unless mode is a46 and SPIKE_A46_STRIPE_LIVE=1.
+    Returns True if the env was kept (live opt-in)."""
+    if mode in A46_MODES and os.environ.get("SPIKE_A46_STRIPE_LIVE", "").strip() == "1":
+        return True
+    gone = [k for k in STRIPE_SECRET_ENVS if os.environ.pop(k, None) is not None]
+    if gone:
+        print(f"stripe env: scrubbed {', '.join(gone)} for this run (Control stays in mock top-up mode)", flush=True)
+    return False
+
+
+def assert_control_mock_topup(control):
+    """`all`: prove Control started without a Stripe key (POST /v1/topup/test -> 409 stripe_test_unavailable)."""
+    req = urllib.request.Request(control + "/v1/topup/test", data=b'{"account_id":"acct_demo"}',
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            st, body = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        st, body = e.code, e.read()
+    try:
+        code = json.loads(body or b"{}").get("code")
+    except ValueError:
+        code = None
+    if st != 409 or code != "stripe_test_unavailable":
+        raise SystemExit(f"FAIL control stripe mode: /v1/topup/test -> {st} {code} (want 409 stripe_test_unavailable)")
+    print("OK control stripe mode: mock (/v1/topup/test -> 409 stripe_test_unavailable)", flush=True)
+
+
+# Docker: only ever the local unix socket. A non-unix DOCKER_HOST (e.g. tcp://...:2375, an
+# unauthenticated engine) is a hard FAIL, never a fallback; children get DOCKER_HOST pinned to the
+# local socket and no DOCKER_CONTEXT. The sudo'd docker (smokes run `sudo env ... docker`) has its
+# env reset by sudo, so its context endpoint is checked too (`docker context inspect` reads local
+# config only; it doesn't contact any engine).
+LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
+
+
+def docker_child_env(tag):
+    """FAIL unless Docker resolves to a unix socket for us and for root; return the child env."""
+    dh = os.environ.get("DOCKER_HOST", "").strip()
+    if dh and not dh.startswith("unix://"):
+        raise SystemExit(f"FAIL {tag}: DOCKER_HOST={dh} is not a unix:// socket; refusing to use a remote/TCP "
+                         f"Docker engine (unset DOCKER_HOST or point it at {LOCAL_DOCKER_HOST})")
+    ctx = os.environ.get("DOCKER_CONTEXT", "").strip()
+    if ctx and ctx != "default":
+        raise SystemExit(f"FAIL {tag}: DOCKER_CONTEXT={ctx} set; only the default local unix socket is allowed")
+    for who, argv in (("user", ["docker"]), ("root", ["sudo", "-n", "docker"])):
+        try:
+            r = subprocess.run([*argv, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
+                               env={**os.environ, "DOCKER_HOST": dh or LOCAL_DOCKER_HOST} if who == "user" else None)
+            ep = r.stdout.strip()
+        except Exception as e:
+            raise SystemExit(f"FAIL {tag}: could not read the {who} docker context ({e})")
+        if r.returncode != 0 or not ep.startswith("unix://"):
+            raise SystemExit(f"FAIL {tag}: {who} docker endpoint is {ep or '<unknown>'!r}, not a unix:// socket; "
+                             "refusing to use a remote/TCP Docker engine")
+    env = {k: v for k, v in os.environ.items() if k != "DOCKER_CONTEXT"}
+    env["DOCKER_HOST"] = dh or LOCAL_DOCKER_HOST
+    print(f"{tag}: docker endpoint {env['DOCKER_HOST']} (user + root contexts unix://)", flush=True)
+    return env
 
 
 def start_stack():
@@ -199,6 +270,10 @@ def _run_netns_smoke(tag, title, script, marker, needs=("cargo", "sudo"), strict
         print(f"SKIP {tag} {script}: {reason} (set {set_hint} or SPIKE_IMPL=rust to make this fatal)", flush=True)
         return "skip", ""
 
+    dh = os.environ.get("DOCKER_HOST", "").strip()
+    if "docker" in needs and dh and not dh.startswith("unix://"):  # before any SKIP: never silently pass
+        raise SystemExit(f"FAIL {tag}: DOCKER_HOST={dh} is not a unix:// socket; refusing to use a remote/TCP "
+                         f"Docker engine (unset DOCKER_HOST or point it at {LOCAL_DOCKER_HOST})")
     if "cargo" in needs and shutil.which("cargo") is None:
         return unavailable("cargo not found")
     if "docker" in needs and shutil.which("docker") is None:
@@ -215,9 +290,11 @@ def _run_netns_smoke(tag, title, script, marker, needs=("cargo", "sudo"), strict
         if not sudo_ok:
             return unavailable("non-interactive sudo (sudo -n) unavailable")
 
+    child_env = docker_child_env(tag) if "docker" in needs else None
     p = subprocess.run(
         [sys.executable, "-u", str(ROOT / "scripts" / f"{script}.py")],
         cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env=child_env,
     )
     sys.stdout.write(p.stdout)
     sys.stdout.flush()
@@ -245,6 +322,43 @@ def run_a42_self_relay():
     (then FAIL). The smoke is single-instance (/tmp/stream-spike-a42.lock) and fails if it's held."""
     return _run_netns_smoke("a42", "A4.2", "a42_self_relay_smoke", "A4.2_SELF_RELAY_GREEN",
                             needs=("cargo", "sudo"), strict_env=("SPIKE_A3", "SPIKE_A4"))
+
+
+def run_a43_gateway_egress():
+    """A4.3 Gateway egress check + kill propagation smoke (Platform's scripts/a43_gateway_egress_smoke.py):
+    the a42 relay-only netns + a43-site TLS stand-in 198.51.100.10:443, no default route. Needs cargo +
+    sudo -n; SKIP without them unless SPIKE_IMPL=rust / SPIKE_A3=1 / SPIKE_A4=1 (then FAIL). Shares
+    /tmp/stream-spike-a42.lock with a42 (fails if another a42/a43 run holds it)."""
+    return _run_netns_smoke("a43", "A4.3", "a43_gateway_egress_smoke", "A4.3_GATEWAY_EGRESS_GREEN",
+                            needs=("cargo", "sudo"), strict_env=("SPIKE_A3", "SPIKE_A4"))
+
+
+def run_a46_stripe_test_topup(stripe_live=False):
+    """A4.6 Stripe test-mode top-up smoke (Platform's scripts/a46_stripe_test_topup_smoke.py).
+    Python only, loopback ports, no sudo / cargo. Lane A (locally signed events, loopback Stripe fake)
+    always runs. Lane B (real Stripe TEST API) runs only with SPIKE_A46_STRIPE_LIVE=1 and a key in the
+    env; otherwise the key is scrubbed and lane B skips, so the run is network-free. Lane B is never
+    required (also not under SPIKE_A4=1)."""
+    print("\n=== a46_stripe_test_topup_smoke (A4.6) ===", flush=True)
+    print(f"a46: Stripe test API {'opt-in (SPIKE_A46_STRIPE_LIVE=1)' if stripe_live else 'off (key scrubbed; lane B skips)'}",
+          flush=True)
+    p = subprocess.run(
+        [sys.executable, "-u", str(ROOT / "scripts" / "a46_stripe_test_topup_smoke.py")],
+        cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    out = p.stdout
+    for k in STRIPE_SECRET_ENVS:  # belt and braces: the smoke scrubs too
+        v = os.environ.get(k, "").strip()
+        if v:
+            out = out.replace(v, v[:8] + "…REDACTED")
+    sys.stdout.write(out)
+    sys.stdout.flush()
+    lines = [l.strip() for l in out.splitlines()]
+    lane_b = next((l.split("A46_LANE_B=", 1)[1] for l in lines if "A46_LANE_B=" in l), "?")
+    if p.returncode != 0 or "A4.6_STRIPE_TEST_TOPUP_GREEN" not in lines:
+        raise SystemExit(f"FAIL a46_stripe_test_topup_smoke (rc={p.returncode})")
+    print(f"PASS a46_stripe_test_topup_smoke (lane B: {lane_b})", flush=True)
+    return "pass", out
 
 
 # A4.4: Peer ships the final marker with part 2; until then part 1 is accepted. Final listed first
@@ -560,6 +674,7 @@ def run_a3_iroh_local():
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    stripe_live = scrub_stripe_env(mode)
     if mode in ("a11", "iroh-loopback", "iroh_loopback"):
         run_iroh_loopback()
         return 0
@@ -577,6 +692,12 @@ def main():
         return 0
     if mode in ("a42", "self-relay", "self_relay"):
         run_a42_self_relay()
+        return 0
+    if mode in A46_MODES:
+        run_a46_stripe_test_topup(stripe_live)
+        return 0
+    if mode in ("a43", "gateway-egress", "gateway_egress"):
+        run_a43_gateway_egress()
         return 0
     if mode in ("a44", "peer-egress", "peer_egress"):
         run_a44_peer_egress()
@@ -604,6 +725,7 @@ def main():
         run_a33_ticket_bind()
         return 0
     env = start_stack()
+    assert_control_mock_topup(spike_ports.urls(env)[0])
     grace = ["grace-stop", "assert-grace-ledger"]
     gates = [
         "gate-denylist",

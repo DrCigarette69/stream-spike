@@ -4,6 +4,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# Hermetic: never let exported Stripe TEST credentials put the demo's Control in Stripe mode.
+unset STRIPE_TEST_SECRET_KEY STRIPE_WEBHOOK_SECRET
 IMPL="${SPIKE_IMPL:-python}"
 echo "=== Stream Alpha · SPIKE DoD (A0) · SPIKE_IMPL=${IMPL} ==="
 python3 scripts/run_local_asserts.py all
