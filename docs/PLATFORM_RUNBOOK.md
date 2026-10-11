@@ -349,3 +349,20 @@ Endpoint: `RelayMode::Custom(<allow URL>, quic: None)`, `PathSelection::RelayOnl
 - Needs: host (small VPS), a hostname we own, DNS A/AAAA record, firewall allowing 80 (ACME / captive portal) + 443 (relay) only; Gateway client/admin listeners stay on localhost (SSH tunnel).
 - `tls` hook (validated now, then refused with `relay_tls_todo` until the deploy slice): `STREAM_RELAY_MODE=tls`, `STREAM_RELAY_HOSTNAME`, `STREAM_RELAY_HTTPS_BIND=<public-ip>:443`, `STREAM_RELAY_HTTP_BIND=<public-ip>:80`, `STREAM_RELAY_TLS_CERT` / `STREAM_RELAY_TLS_KEY` (Let's Encrypt via certbot, or iroh-relay's built-in ACME), `STREAM_RELAY_ALLOW_ENDPOINTS` (Gateway + Jeff's two devices).
 - Clients then use `SPIKE_RELAY_ALLOW_URL=https://<hostname>/` from pilot builds (no `a4_local`); certs are always verified.
+
+## A4.3 Gateway egress check + kill propagation (`iroh_pilot`, TOM-23)
+
+### Control kill switch (default OFF)
+
+- `GET /v1/egress/state` → `{"public_egress": bool, "allowlist_version": "<sha256 hex>", "ts": <unix s, now>, "updated_at": <unix s of last flip>, "age_s": <s since flip>, "allowlist": ["host:port", ...]}`. Starts `public_egress: false`. `allowlist_version` = A4.1 `EgressAllow.version()` of Control's `SPIKE_EGRESS_ALLOWLIST`; unset/invalid → `"allowlist_version": ""`, `"public_egress": false`, `"error": "egress_allowlist_config"` (Gateway/Peer then refuse = fail closed).
+- `POST /v1/admin/egress` (alias `POST /v1/egress/state`) body `{"public_egress": true|false}` (+ optional `"allowlist": ["host:port", ...]` to change the list → new version). **Local-only:** if `SPIKE_ADMIN_TOKEN` is set, header `X-Admin-Token` must match; otherwise only same-host callers (loopback or Control's own listen IP) — anyone else gets `403 admin_local_only`. Non-bool → `400 public_egress_bool_required`; bad list → `400 egress_allowlist_config`. Emits event `egress.flag`.
+
+### Frames (NDJSON over the pilot bi stream; `stream_proto::relay::{EgressState, Data, Close}`)
+
+| Frame | Direction | Shape |
+|---|---|---|
+| `EGRESS_STATE` | Gateway → Peer, every ~1 s while the Gateway's copy of Control's state is fresh (not sent when stale/unreachable, so the Peer goes stale too) | `{"type":"EGRESS_STATE","public_egress":true,"allowlist_version":"<sha256>","ts":1791759487.21}` |
+| `DATA` | both: Gateway → Peer = client→site bytes, Peer → Gateway = site→client bytes | `{"type":"DATA","stream_id":"<sid>","b64":"<standard padded base64, ≤16384 raw bytes>"}` |
+| `CLOSE` | both | `{"type":"CLOSE","stream_id":"<sid>","reason":"egress_off","detail":"flag_off"}` — `reason`/`detail` optional (A1–A3 `{"type":"CLOSE","stream_id":..}` still valid) |
+
+`BYTES {stream_id, n}` stays the A1–A3 byte-count frame; a pilot stream carrying `DATA` gets no synthetic `BYTES`. Close reasons the Gateway sends: `egress_off` (detail `local_off`/`no_state`/`flag_off`/`flag_stale`), `egress_allowlist_mismatch`, `egress_budget_exceeded`, `client_closed`, `peer_closed`.

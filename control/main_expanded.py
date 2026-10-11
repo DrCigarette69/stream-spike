@@ -372,6 +372,52 @@ def _pilot_verify(payload: dict) -> str | None:
     return None
 
 
+# ---- A4.3 public-egress kill switch: Control flag + allowlist version (default OFF) ----
+_egress = {"public_egress": False, "updated_at": time.time(), "allowlist": None, "error": None}
+
+
+def _egress_allowlist():
+    """(entries, version, error). Unset/invalid allowlist -> no version (Gateway/Peer refuse = fail closed)."""
+    if _egress["allowlist"] is None:
+        raw = os.environ.get("SPIKE_EGRESS_ALLOWLIST", "")
+        try:
+            g = _guard()
+            a = g.EgressAllow.parse(raw)
+            _egress["allowlist"] = (["%s:%d" % e for e in a.entries()], a.version(), None)
+        except ImportError:
+            _egress["allowlist"] = ([], "", "guard_unavailable")
+        except Exception as e:  # GuardError (egress_allowlist_config) incl. unset
+            _egress["allowlist"] = ([], "", getattr(e, "reason", "egress_allowlist_config"))
+    return _egress["allowlist"]
+
+
+def _egress_state() -> dict:
+    entries, version, error = _egress_allowlist()
+    now = time.time()
+    out = {
+        "public_egress": bool(_egress["public_egress"]) and not error,
+        "allowlist_version": version,
+        "ts": now,
+        "updated_at": _egress["updated_at"],
+        "age_s": round(now - _egress["updated_at"], 3),
+        "allowlist": entries,
+    }
+    if error:
+        out["error"] = error
+    return out
+
+
+def _egress_admin_ok(handler) -> tuple[bool, str]:
+    """Local-only switch: SPIKE_ADMIN_TOKEN (X-Admin-Token) when set, else same-host callers only."""
+    token = os.environ.get("SPIKE_ADMIN_TOKEN", "")
+    if token:
+        got = handler.headers.get("X-Admin-Token", "")
+        return (hmac.compare_digest(got, token), "admin_token_required")
+    peer = handler.client_address[0]
+    local = {"127.0.0.1", "::1", LISTEN.rsplit(":", 1)[0].strip("[]")}
+    return (peer in local or peer.startswith("127."), "admin_local_only")
+
+
 def _denylist_version() -> int:
     with _lock:
         c = _conn()
@@ -424,6 +470,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/events":
             with _lock:
                 return self._json(200, {"events": list(_events)})
+        if path == "/v1/egress/state":
+            with _lock:
+                return self._json(200, _egress_state())
         if path.startswith("/v1/capacity/"):
             return self._json(200, {"capacity": _capacity()})
         if path.startswith("/v1/sessions/"):
@@ -543,6 +592,27 @@ class Handler(BaseHTTPRequestHandler):
                 c.commit()
                 c.close()
             return self._json(200, {"ok": True})
+
+        if path in ("/v1/admin/egress", "/v1/egress/state"):
+            ok, why = _egress_admin_ok(self)
+            if not ok:
+                return self._json(403, {"error": why})
+            if "public_egress" not in body or not isinstance(body["public_egress"], bool):
+                return self._json(400, {"error": "public_egress_bool_required"})
+            with _lock:
+                if "allowlist" in body:  # admin allowlist change -> new version (Gateway/Peer must match)
+                    raw = body["allowlist"]
+                    raw = ",".join(raw) if isinstance(raw, list) else str(raw)
+                    try:
+                        a = _guard().EgressAllow.parse(raw)
+                    except Exception as e:
+                        return self._json(400, {"error": getattr(e, "reason", "egress_allowlist_config")})
+                    _egress["allowlist"] = (["%s:%d" % e for e in a.entries()], a.version(), None)
+                _egress["public_egress"] = body["public_egress"]
+                _egress["updated_at"] = time.time()
+                st = _egress_state()
+            _emit("egress.flag", public_egress=st["public_egress"], allowlist_version=st["allowlist_version"])
+            return self._json(200, st)
 
         if path == "/v1/admin/fixtures":
             with _lock:
