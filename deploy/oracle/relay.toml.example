@@ -1,0 +1,18 @@
+# Example config for upstream iroh-relay (0.95.x) with Let's Encrypt.
+# stream-relay currently refuses TLS mode (relay_tls_todo); use this with the
+# upstream binary until the deploy slice enables TLS in stream-relay.
+#
+# Copy to /opt/relay/relay.toml and adjust the contact email.
+
+enable_relay = true
+http_bind_addr = "0.0.0.0:80"
+enable_metrics = false
+
+[tls]
+cert_mode = "LetsEncrypt"
+hostname = "catnet.world"
+contact = "admin@catnet.world"
+prod_tls = true
+cert_dir = "/opt/relay/certs"
+https_bind_addr = "0.0.0.0:443"
+# quic_bind_addr = "0.0.0.0:7842"  # optional, for QUIC address discovery

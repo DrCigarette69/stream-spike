@@ -1,0 +1,17 @@
+[Unit]
+Description=Stream Alpha-4 self-hosted Iroh relay (catnet.world)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+WorkingDirectory=/opt/relay
+ExecStart=/usr/local/bin/iroh-relay --config-path /opt/relay/relay.toml
+Restart=on-failure
+RestartSec=5
+# Keep Gateway/Control on localhost only; this unit is the public relay only.
+
+[Install]
+WantedBy=multi-user.target
