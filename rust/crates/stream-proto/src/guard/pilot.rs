@@ -12,6 +12,9 @@
 //! 2. Egress allowlist: `EgressAllow` (`SPIKE_EGRESS_ALLOWLIST`, exact `host:443`, no IPs or
 //!    wildcards), `check_egress_dest`, `check_egress_resolved` (SSRF: every resolved IP must
 //!    be public), `resolve_and_pin` with an injected `Resolver`, `version()` (sha256).
+//!    Pinned entries (A4.1 amendment): `host:443=IP` pins explicitly, and `*.sslip.io` hosts
+//!    are pinned to the IPv4 embedded in the name. Pinned entries never touch DNS;
+//!    an explicit pin that disagrees with the sslip-embedded IP is `egress_pin_mismatch`.
 //! 3. Kill switch: `EgressSwitch` (`SPIKE_PUBLIC_EGRESS` AND Control flag AND fresh
 //!    (`SPIKE_EGRESS_STATE_MAX_AGE_MS`, default/max 5000)) → `egress_off`;
 //!    `check_allowlist_version` → `egress_allowlist_mismatch`; byte cap
@@ -25,6 +28,7 @@
 //! `198.51.100.0/24` (TEST-NET-2). Private / metadata ranges stay refused in both lanes.
 
 use super::{canonical_ip, Cidr, GuardError};
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 pub const ENV_RELAY_ALLOW_URL: &str = "SPIKE_RELAY_ALLOW_URL";
@@ -55,6 +59,7 @@ pub const REASON_EGRESS_ALLOWLIST_MISMATCH: &str = "egress_allowlist_mismatch";
 pub const REASON_EGRESS_BUDGET_EXCEEDED: &str = "egress_budget_exceeded";
 pub const REASON_TRANSPORT_NOT_PILOT: &str = "transport_not_pilot";
 pub const REASON_STRIPE_LIVE_KEY_REFUSED: &str = "stripe_live_key_refused";
+pub const REASON_EGRESS_PIN_MISMATCH: &str = "egress_pin_mismatch";
 
 /// Reasons whose log line is `a4_refuse_<reason>:<detail>`.
 pub const A4_REASONS: &[&str] = &[
@@ -69,7 +74,11 @@ pub const A4_REASONS: &[&str] = &[
     REASON_EGRESS_BUDGET_EXCEEDED,
     REASON_TRANSPORT_NOT_PILOT,
     REASON_STRIPE_LIVE_KEY_REFUSED,
+    REASON_EGRESS_PIN_MISMATCH,
 ];
+
+/// Third-party wildcard DNS suffix whose answers we never trust (pilot VPS without a domain).
+pub const SSLIP_SUFFIX: &str = "sslip.io";
 
 fn err(reason: &'static str, detail: impl Into<String>) -> GuardError {
     GuardError::new(reason, detail)
@@ -198,6 +207,43 @@ fn is_refused_local_name(h: &str) -> bool {
 /// n0 / community relay hosts (never allowed as our relay).
 pub fn is_n0_relay_host(h: &str) -> bool {
     has_suffix(h, "iroh.network") || has_suffix(h, "iroh.link") || h.split('.').any(|l| l == "n0")
+}
+
+/// Normalised host is `sslip.io` or ends in `.sslip.io`.
+pub fn is_sslip_host(h: &str) -> bool {
+    has_suffix(h, SSLIP_SUFFIX)
+}
+
+/// One strict decimal octet: 1-3 digits, no leading zero (so no octal ambiguity), <= 255.
+fn strict_octet(s: &str) -> Option<u8> {
+    if s.is_empty() || s.len() > 3 || !s.bytes().all(|b| b.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0')) {
+        return None;
+    }
+    s.parse::<u8>().ok()
+}
+
+fn octets4<'a>(parts: impl Iterator<Item = &'a str>) -> Option<Ipv4Addr> {
+    let v: Vec<&str> = parts.collect();
+    if v.len() != 4 {
+        return None;
+    }
+    let o: Vec<u8> = v.iter().map(|p| strict_octet(p)).collect::<Option<_>>()?;
+    Some(Ipv4Addr::new(o[0], o[1], o[2], o[3]))
+}
+
+/// IPv4 embedded immediately before `.sslip.io` in a normalised host: dotted
+/// (`relay.203.0.113.7.sslip.io`, the four labels before the suffix) or dashed
+/// (`203-0-113-7.sslip.io`, the one label before the suffix is exactly `a-b-c-d`).
+/// `None` if `h` isn't an sslip host or has no valid embedded IPv4. Dotted wins if both match.
+pub fn sslip_embedded_ipv4(h: &str) -> Option<Ipv4Addr> {
+    let base = h.strip_suffix(SSLIP_SUFFIX)?.strip_suffix('.')?;
+    let labels: Vec<&str> = base.split('.').collect();
+    if labels.len() >= 4 {
+        if let Some(ip) = octets4(labels[labels.len() - 4..].iter().copied()) {
+            return Some(ip);
+        }
+    }
+    octets4(labels[labels.len() - 1].split('-'))
 }
 
 // ---------------------------------------------------------------- 1. relay allowlist
@@ -368,23 +414,40 @@ pub fn check_relay_required(direct_addrs: &[String], relay_url: Option<&str>) ->
 pub struct EgressAllow {
     /// Sorted, deduplicated `(host, port)`.
     entries: Vec<(String, u16)>,
+    /// Pinned address per entry (explicit `=IP` or sslip-embedded). Pinned entries skip DNS.
+    pins: BTreeMap<(String, u16), IpAddr>,
 }
 
 impl EgressAllow {
-    /// Comma-separated `host:port`. Empty, IP literal, wildcard, bad name, local-only name,
-    /// or port not in `ALLOWED_EGRESS_PORTS` → `egress_allowlist_config`.
+    /// `parse_for(s, Lane::build())`.
     pub fn parse(s: &str) -> Result<EgressAllow, GuardError> {
+        Self::parse_for(s, Lane::build())
+    }
+
+    /// Comma-separated `host:port` or `host:port=IP`. `egress_allowlist_config` for: empty,
+    /// IP-literal host, wildcard, bad name, local-only name, port not in `ALLOWED_EGRESS_PORTS`,
+    /// a pin that isn't a public IP for `lane`, or a `*.sslip.io` host without a valid embedded
+    /// IPv4 (or whose embedded IP isn't public for `lane`). `egress_pin_mismatch` when an
+    /// explicit pin differs from the sslip-embedded IP, or the same `host:port` is listed twice
+    /// with different pins.
+    pub fn parse_for(s: &str, lane: Lane) -> Result<EgressAllow, GuardError> {
         let parts: Vec<&str> = s.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
         if parts.is_empty() {
             return Err(err(REASON_EGRESS_ALLOWLIST_CONFIG, "<empty>"));
         }
         let mut entries = Vec::with_capacity(parts.len());
+        let mut pins: BTreeMap<(String, u16), IpAddr> = BTreeMap::new();
+        let mut seen: BTreeMap<(String, u16), Option<IpAddr>> = BTreeMap::new();
         for p in parts {
             let bad = || err(REASON_EGRESS_ALLOWLIST_CONFIG, p.to_string());
-            if p.contains(['*', '[', ']', '/', '@']) {
+            let (hp, pin_s) = match p.split_once('=') {
+                Some((a, b)) => (a.trim(), Some(b.trim())),
+                None => (p, None),
+            };
+            if hp.contains(['*', '[', ']', '/', '@']) {
                 return Err(bad());
             }
-            let (h, port_s) = p.rsplit_once(':').ok_or_else(bad)?;
+            let (h, port_s) = hp.rsplit_once(':').ok_or_else(bad)?;
             if h.contains(':') || h.parse::<IpAddr>().is_ok() {
                 return Err(bad());
             }
@@ -399,23 +462,71 @@ impl EgressAllow {
             if is_refused_local_name(&host) {
                 return Err(bad());
             }
+            let explicit = match pin_s {
+                None => None,
+                Some(ps) => {
+                    let bare = ps.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(ps);
+                    let ip = canonical_ip(bare.parse::<IpAddr>().map_err(|_| bad())?);
+                    if !is_public_egress_ip(ip, lane) {
+                        return Err(bad());
+                    }
+                    Some(ip)
+                }
+            };
+            let embedded = if is_sslip_host(&host) {
+                let ip = IpAddr::V4(sslip_embedded_ipv4(&host).ok_or_else(bad)?);
+                if !is_public_egress_ip(ip, lane) {
+                    return Err(bad());
+                }
+                Some(ip)
+            } else {
+                None
+            };
+            let pin = match (embedded, explicit) {
+                (Some(e), Some(x)) if e != x => {
+                    return Err(err(REASON_EGRESS_PIN_MISMATCH, format!("{host}:{port} sslip={e} pin={x}")));
+                }
+                (e, x) => e.or(x),
+            };
+            let key = (host.clone(), port as u16);
+            if let Some(prev) = seen.get(&key) {
+                if *prev != pin {
+                    return Err(err(REASON_EGRESS_PIN_MISMATCH, format!("{host}:{port} listed with different pins")));
+                }
+            }
+            seen.insert(key.clone(), pin);
+            if let Some(ip) = pin {
+                pins.insert(key, ip);
+            }
             entries.push((host, port as u16));
         }
         entries.sort();
         entries.dedup();
-        Ok(EgressAllow { entries })
+        Ok(EgressAllow { entries, pins })
     }
 
     pub fn entries(&self) -> &[(String, u16)] {
         &self.entries
     }
 
-    /// Canonical text: one `host:port\n` per entry, sorted.
-    pub fn canonical(&self) -> String {
-        self.entries.iter().map(|(h, p)| format!("{h}:{p}\n")).collect()
+    /// The pinned address for an allowlisted `host:port` (normalised host), if any.
+    pub fn pin(&self, host: &str, port: u16) -> Option<IpAddr> {
+        self.pins.get(&(host.to_string(), port)).copied()
     }
 
-    /// `allowlist_version`: lowercase hex sha256 of `canonical()`.
+    /// Canonical text: one `host:port\n` (or `host:port=IP\n` when pinned) per entry, sorted.
+    /// Unpinned lists hash exactly as before the amendment.
+    pub fn canonical(&self) -> String {
+        self.entries
+            .iter()
+            .map(|(h, p)| match self.pin(h, *p) {
+                Some(ip) => format!("{h}:{p}={ip}\n"),
+                None => format!("{h}:{p}\n"),
+            })
+            .collect()
+    }
+
+    /// `allowlist_version`: lowercase hex sha256 of `canonical()` (so it covers the pins).
     pub fn version(&self) -> String {
         sha256_hex(self.canonical().as_bytes())
     }
@@ -426,6 +537,7 @@ impl EgressAllow {
 }
 
 /// `SPIKE_EGRESS_ALLOWLIST` (required in pilot mode: unset/empty → `egress_allowlist_config`).
+/// Parsed for `Lane::build()`.
 pub fn egress_allow_from_env() -> Result<EgressAllow, GuardError> {
     match std::env::var(ENV_EGRESS_ALLOWLIST) {
         Ok(v) => EgressAllow::parse(&v),
@@ -483,6 +595,8 @@ impl Resolver for StdResolver {
 /// Full check for one OPEN: allowlist → resolve once → SSRF check → the `SocketAddr` to
 /// connect to. Callers must connect to exactly this address (no second lookup), which is
 /// the DNS-rebinding guard. Kill switch / floor checks come before this (see doc order).
+/// Pinned entries (explicit `=IP` or `*.sslip.io`) never call the resolver: the pin is
+/// re-checked as public for `lane` (`egress_resolved_non_public`) and returned.
 pub fn resolve_and_pin(
     host: &str,
     port: u16,
@@ -491,6 +605,12 @@ pub fn resolve_and_pin(
     lane: Lane,
 ) -> Result<SocketAddr, GuardError> {
     let h = check_egress_dest(host, port, allow)?;
+    if let Some(pin) = allow.pin(&h, port) {
+        if !is_public_egress_ip(pin, lane) {
+            return Err(err(REASON_EGRESS_RESOLVED_NON_PUBLIC, format!("{h}->{pin}")));
+        }
+        return Ok(SocketAddr::new(pin, port));
+    }
     let ips = resolver
         .resolve(&h, port)
         .map_err(|_| err(REASON_EGRESS_RESOLVE_FAILED, format!("{h}:{port}")))?;

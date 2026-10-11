@@ -65,7 +65,7 @@ All three live in `stream_proto::guard` with the same rules, env names and reaso
 - `allowlist_version` must match on Gateway and Peer, or OPENs are refused (`egress_allowlist_mismatch`), so the two checks can't drift apart.
 - Guard primitive: `EgressSwitch { env_on, flag, max_age_ms }` → `check(now_ms)` / `is_on(now_ms)` / `check_open(now_ms, local_version)`, pure and time-injectable for tests. Every off state is reason `egress_off` (matches `p8_offline.reason_lines`); the detail says why: `local_off`, `no_state`, `flag_off`, `flag_stale` (a future timestamp counts as stale). `SPIKE_EGRESS_STATE_MAX_AGE_MS` can only narrow: clamped to 100–5000 ms.
 
-New reason strings (stable; landed in A4.1, see *A4.1 as landed*): `relay_config`, `relay_required`, `egress_allowlist_config`, `egress_not_allowlisted`, `egress_resolved_non_public`, `egress_resolve_failed`, `egress_off`, `egress_allowlist_mismatch`, `egress_budget_exceeded`, `transport_not_pilot`, `stripe_live_key_refused`. Log lines `a4_refuse_<reason>:<detail>` (detail = host:port or URL, never payload).
+New reason strings (stable; landed in A4.1, see *A4.1 as landed*): `relay_config`, `relay_required`, `egress_allowlist_config`, `egress_not_allowlisted`, `egress_resolved_non_public`, `egress_resolve_failed`, `egress_off`, `egress_allowlist_mismatch`, `egress_budget_exceeded`, `transport_not_pilot`, `stripe_live_key_refused`, plus `egress_pin_mismatch` (A4.1 amendment, below). Log lines `a4_refuse_<reason>:<detail>` (detail = host:port or URL, never payload).
 
 ### A4.1 as landed
 
@@ -75,7 +75,14 @@ New reason strings (stable; landed in A4.1, see *A4.1 as landed*): `relay_config
 - The SSRF check refuses IPv6 outside `2000::/3` plus `2001::/23`, `2001:db8::/32`, `2002::/16` (6to4), `3fff::/20`, ORCHID; NAT64 `64:ff9b::/96` and `64:ff9b:1::/48` fall outside `2000::/3`.
 - `resolve_and_pin` refuses off-allowlist names **before** any DNS lookup.
 - `check_stripe_test_key` logs only the key prefix (e.g. `sk_live_`), never the key.
-- `allowlist_version` = sha256 of the sorted canonical `host:port\n` lines (std-only SHA-256 in Rust, `hashlib` in Python; same hex).
+- `allowlist_version` = sha256 of the sorted canonical lines, `host:port\n` or `host:port=IP\n` for pinned entries (std-only SHA-256 in Rust, `hashlib` in Python; same hex). Lists with no pinned entries hash exactly as before; a changed pin changes the version, so Gateway and Peer must agree on pins too (`egress_allowlist_mismatch`).
+
+**sslip.io / pinned hosts (A4.1 amendment).** The pilot VPS may have no domain and use sslip.io names (`relay.<ip>.sslip.io`, `echo.<ip>.sslip.io`). sslip.io is third-party DNS, so its answers are never trusted for egress:
+- Any allowlist host that is `sslip.io` or ends in `.sslip.io` (after `normalize_hostname`, so case-insensitive) must embed an IPv4 **immediately before** `.sslip.io`: dotted (`echo.93.184.215.14.sslip.io`, the four labels before the suffix) or dashed (`echo.93-184-215-14.sslip.io`, that one label is exactly `a-b-c-d`). Octets are strict decimal (0–255, no leading zeros). No valid embedded IP, or an embedded IP that isn't public for the lane (`is_public_egress_ip`; `198.51.100.0/24` only in `Lane::Local`), → `egress_allowlist_config` at parse time. Note `203.0.113.x` (TEST-NET-3, used in examples) is refused in both lanes; the real VPS IP must be public.
+- Explicit pin for any host: `SPIKE_EGRESS_ALLOWLIST` entries may be `host:443=IP` (IPv4, IPv6 bare or `[v6]`; IPv4-mapped canonicalised). The pin must be public for the lane, else `egress_allowlist_config`. The host part still may not be an IP literal.
+- **Choice: pinned entries skip DNS entirely.** `resolve_and_pin` never calls the resolver for an sslip host or an explicitly pinned host; it re-checks the pin against the OPEN's lane (`egress_resolved_non_public`) and returns `pin:port`. There's no "resolve and compare" mode, so `egress_pin_mismatch` is only a config error: an explicit pin that differs from the sslip-embedded IP, or the same `host:port` listed twice with different pins (incl. once pinned, once not). A matching explicit pin on an sslip host is allowed.
+- API: `EgressAllow::parse_for(s, lane)` (`parse(s)` = `parse_for(s, Lane::build())`, unchanged signature for Peer/Gateway), `EgressAllow::pin(host, port) -> Option<IpAddr>`, `is_sslip_host`, `sslip_embedded_ipv4`, `REASON_EGRESS_PIN_MISMATCH`. Python: `EgressAllow.parse(s, lane=LANE_PILOT)`, `.pin()`, `is_sslip_host`, `sslip_embedded_ipv4`, `REASON_EGRESS_PIN_MISMATCH`.
+- Only `sslip.io` is special-cased; other wildcard-DNS services (`nip.io` etc.) are ordinary hostnames and go through DNS + the SSRF check. Use an explicit `=IP` pin if one is ever needed.
 
 ## Slices & owners
 
@@ -146,6 +153,7 @@ Done = A4.0–A4.8 green on one tip with every existing green unchanged, then A4
 8. **What's logged.** Per OPEN/CLOSE: account, time, host, port, bytes, location tier, reason. Retention for the pilot: 30 days on the VPS, deleted after sign-off unless Jeff says otherwise. Never contents, never full URLs (CONNECT carries host:port only).
 9. **Budget caps.** Pilot default 50 MB/day/Peer and ≤2 concurrent streams per Peer; Jeff to confirm. Caps are enforced at both ends.
 10. **Kill-switch latency vs polling.** 1 s poll / 5 s stale is simple; a push channel can come later. If Control is down, egress is off: that's intended, but the Peer shows `p8_offline`, not a crash.
+11. **Relay hostname via sslip.io.** The egress allowlist pins sslip names without DNS, but the **relay** URL (`https://relay.<ip>.sslip.io/`) is still resolved by iroh's own resolver, so a hijacked or wrong sslip.io answer could point Peers at another relay. Mitigation: the Gateway's endpoint ID (from the Control ticket) authenticates the QUIC session end to end, so a hostile relay can only drop traffic or see metadata (who talks to whom, timing, sizes), not read or MITM the session; relay TLS stays verified (no `insecure_skip_relay_cert_verify`). **Replace with a real domain we own before any non-Jeff device joins.**
 
 ## Out of Alpha-4
 

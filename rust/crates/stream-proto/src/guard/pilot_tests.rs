@@ -367,3 +367,175 @@ fn pilot_env() {
 fn pilot_lane_build() {
     assert_eq!(Lane::build(), if cfg!(feature = "a4_local") { Lane::Local } else { Lane::Pilot });
 }
+
+// ---------------------------------------------------------------- A4.1 amendment: sslip.io / pins
+
+/// Resolver that must never be called (pinned entries skip DNS).
+struct PanicResolver;
+
+impl Resolver for PanicResolver {
+    fn resolve(&self, host: &str, _port: u16) -> Result<Vec<IpAddr>, String> {
+        panic!("resolver called for pinned host {host}");
+    }
+}
+
+#[test]
+fn pilot_sslip_embedded_ipv4() {
+    let v4 = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+    assert!(is_sslip_host("sslip.io") && is_sslip_host("a.sslip.io") && !is_sslip_host("notsslip.io"));
+    for (h, want) in [
+        ("relay.93.184.215.14.sslip.io", "93.184.215.14"),
+        ("93.184.215.14.sslip.io", "93.184.215.14"),
+        ("93-184-215-14.sslip.io", "93.184.215.14"),
+        ("echo.93-184-215-14.sslip.io", "93.184.215.14"),
+        ("x.1.93.184.215.14.sslip.io", "93.184.215.14"), // the four labels immediately before
+        ("203.0.113.7.sslip.io", "203.0.113.7"),         // parsed; policy rejects it later
+        ("0.0.0.0.sslip.io", "0.0.0.0"),
+    ] {
+        assert_eq!(sslip_embedded_ipv4(h), Some(v4(want)), "{h}");
+    }
+    for h in [
+        "sslip.io", "relay.sslip.io", "1.2.3.sslip.io", "1-2-3.sslip.io", "1-2-3-4-5.sslip.io",
+        "relay-93-184-215-14.sslip.io", "93.184.215.256.sslip.io", "93.184.215.014.sslip.io",
+        "93-184-215-014.sslip.io", "93.184.215.14.sslip.io.evil.com", "93.184.215.14.example.org",
+        "93.184.215.14.xsslip.io",
+    ] {
+        assert_eq!(sslip_embedded_ipv4(h), None, "{h}");
+    }
+}
+
+#[test]
+fn pilot_sslip_allowlist_parse() {
+    let a = EgressAllow::parse_for("Echo.93.184.215.14.SSLIP.io.:443, relay.8-8-8-8.sslip.io:443", Lane::Pilot).unwrap();
+    assert_eq!(a.pin("echo.93.184.215.14.sslip.io", 443), Some(ip("93.184.215.14")));
+    assert_eq!(a.pin("relay.8-8-8-8.sslip.io", 443), Some(ip("8.8.8.8")));
+    assert_eq!(
+        a.canonical(),
+        "echo.93.184.215.14.sslip.io:443=93.184.215.14\nrelay.8-8-8-8.sslip.io:443=8.8.8.8\n"
+    );
+    // Local lane: TEST-NET-2 embedded IP allowed, refused in Pilot.
+    assert!(EgressAllow::parse_for("echo.198.51.100.10.sslip.io:443", Lane::Local).is_ok());
+    for (s, lane) in [
+        ("echo.198.51.100.10.sslip.io:443", Lane::Pilot),
+        ("sslip.io:443", Lane::Pilot),
+        ("relay.sslip.io:443", Lane::Pilot),
+        ("echo.203.0.113.7.sslip.io:443", Lane::Pilot), // TEST-NET-3
+        ("echo.203.0.113.7.sslip.io:443", Lane::Local),
+        ("echo.10.0.0.1.sslip.io:443", Lane::Local),
+        ("echo.127.0.0.1.sslip.io:443", Lane::Pilot),
+        ("meta.169-254-169-254.sslip.io:443", Lane::Local),
+        ("echo.192.168.1.1.sslip.io:443", Lane::Pilot),
+        ("echo.1-2-3.sslip.io:443", Lane::Pilot),
+        ("echo.93.184.215.14.sslip.io:80", Lane::Pilot),
+    ] {
+        let e = EgressAllow::parse_for(s, lane).unwrap_err();
+        assert_eq!(e.reason, REASON_EGRESS_ALLOWLIST_CONFIG, "{s:?} {lane:?}");
+    }
+}
+
+#[test]
+fn pilot_explicit_pin_parse() {
+    let a = EgressAllow::parse_for("echo.example.org:443=93.184.215.14,v6.example.org:443=[2606:4700::1],plain.example.org:443", Lane::Pilot).unwrap();
+    assert_eq!(a.pin("echo.example.org", 443), Some(ip("93.184.215.14")));
+    assert_eq!(a.pin("v6.example.org", 443), Some(ip("2606:4700::1")));
+    assert_eq!(a.pin("plain.example.org", 443), None);
+    assert_eq!(
+        a.canonical(),
+        "echo.example.org:443=93.184.215.14\nplain.example.org:443\nv6.example.org:443=2606:4700::1\n"
+    );
+    // bare v6 and v4-mapped pins canonicalise
+    let b = EgressAllow::parse_for("v6.example.org:443=2606:4700::1,m.example.org:443=::ffff:8.8.8.8", Lane::Pilot).unwrap();
+    assert_eq!(b.pin("v6.example.org", 443), Some(ip("2606:4700::1")));
+    assert_eq!(b.pin("m.example.org", 443), Some(ip("8.8.8.8")));
+    // same sslip pin given explicitly is fine; duplicate identical entries dedup
+    let c = EgressAllow::parse_for("echo.8.8.8.8.sslip.io:443=8.8.8.8,echo.8.8.8.8.sslip.io:443", Lane::Pilot).unwrap();
+    assert_eq!(c.entries().len(), 1);
+    for s in [
+        "echo.example.org:443=", "echo.example.org:443=nope", "echo.example.org:443=10.0.0.1",
+        "echo.example.org:443=169.254.169.254", "echo.example.org:443=198.51.100.10",
+        "echo.example.org:443=fe80::1%eth0", "echo.example.org:443=1.2.3.4:443", "1.2.3.4:443=1.2.3.4",
+        "*.example.org:443=8.8.8.8",
+    ] {
+        let e = EgressAllow::parse_for(s, Lane::Pilot).unwrap_err();
+        assert_eq!(e.reason, REASON_EGRESS_ALLOWLIST_CONFIG, "{s:?}");
+    }
+    assert!(EgressAllow::parse_for("echo.example.org:443=198.51.100.10", Lane::Local).is_ok());
+    for s in [
+        "echo.8.8.8.8.sslip.io:443=1.1.1.1",
+        "echo.example.org:443=8.8.8.8,echo.example.org:443=1.1.1.1",
+        "echo.example.org:443=8.8.8.8,echo.example.org:443",
+    ] {
+        let e = EgressAllow::parse_for(s, Lane::Pilot).unwrap_err();
+        assert_eq!(e.reason, REASON_EGRESS_PIN_MISMATCH, "{s:?}");
+        assert!(e.log_line().starts_with("a4_refuse_egress_pin_mismatch:"));
+    }
+}
+
+#[test]
+fn pilot_allowlist_version_covers_pins() {
+    let plain = EgressAllow::parse_for("echo.example.org:443", Lane::Pilot).unwrap();
+    let p1 = EgressAllow::parse_for("echo.example.org:443=8.8.8.8", Lane::Pilot).unwrap();
+    let p2 = EgressAllow::parse_for("echo.example.org:443=1.1.1.1", Lane::Pilot).unwrap();
+    assert_eq!(plain.version(), sha256_hex(b"echo.example.org:443\n"), "unpinned hash unchanged");
+    assert_eq!(p1.version(), sha256_hex(b"echo.example.org:443=8.8.8.8\n"));
+    assert_ne!(plain.version(), p1.version());
+    assert_ne!(p1.version(), p2.version());
+    let s = EgressAllow::parse_for("echo.8.8.8.8.sslip.io:443", Lane::Pilot).unwrap();
+    assert_eq!(s.version(), sha256_hex(b"echo.8.8.8.8.sslip.io:443=8.8.8.8\n"));
+}
+
+#[test]
+fn pilot_pinned_resolve_skips_dns() {
+    let a = EgressAllow::parse_for(
+        "echo.93.184.215.14.sslip.io:443,relay.8-8-8-8.sslip.io:443,pinned.example.org:443=1.1.1.1",
+        Lane::Pilot,
+    )
+    .unwrap();
+    // Resolver that panics if called: pinned entries never reach it.
+    assert_eq!(
+        resolve_and_pin("ECHO.93.184.215.14.sslip.io.", 443, &a, &PanicResolver, Lane::Pilot).unwrap(),
+        "93.184.215.14:443".parse().unwrap()
+    );
+    assert_eq!(
+        resolve_and_pin("relay.8-8-8-8.sslip.io", 443, &a, &PanicResolver, Lane::Pilot).unwrap(),
+        "8.8.8.8:443".parse().unwrap()
+    );
+    assert_eq!(
+        resolve_and_pin("pinned.example.org", 443, &a, &PanicResolver, Lane::Pilot).unwrap(),
+        "1.1.1.1:443".parse().unwrap()
+    );
+    // Allowlist still applies first (no DNS either way).
+    assert_eq!(
+        resolve_and_pin("echo.1.1.1.1.sslip.io", 443, &a, &PanicResolver, Lane::Pilot).unwrap_err().reason,
+        REASON_EGRESS_NOT_ALLOWLISTED
+    );
+    // A hijacked / lying resolver answering something else changes nothing: still the embedded IP.
+    let liar = FakeResolver::new(&[
+        ("echo.93.184.215.14.sslip.io", &["169.254.169.254"]),
+        ("relay.8-8-8-8.sslip.io", &["2.2.2.2"]),
+        ("pinned.example.org", &["127.0.0.1"]),
+    ]);
+    assert_eq!(
+        resolve_and_pin("echo.93.184.215.14.sslip.io", 443, &a, &liar, Lane::Pilot).unwrap(),
+        "93.184.215.14:443".parse().unwrap()
+    );
+    assert_eq!(
+        resolve_and_pin("relay.8-8-8-8.sslip.io", 443, &a, &liar, Lane::Pilot).unwrap(),
+        "8.8.8.8:443".parse().unwrap()
+    );
+    assert_eq!(
+        resolve_and_pin("pinned.example.org", 443, &a, &liar, Lane::Pilot).unwrap(),
+        "1.1.1.1:443".parse().unwrap()
+    );
+    assert_eq!(liar.calls.load(Ordering::SeqCst), 0);
+    // Pin parsed in Local lane (TEST-NET-2) is re-checked against the OPEN lane.
+    let l = EgressAllow::parse_for("echo.198.51.100.10.sslip.io:443", Lane::Local).unwrap();
+    assert_eq!(
+        resolve_and_pin("echo.198.51.100.10.sslip.io", 443, &l, &PanicResolver, Lane::Local).unwrap(),
+        "198.51.100.10:443".parse().unwrap()
+    );
+    assert_eq!(
+        resolve_and_pin("echo.198.51.100.10.sslip.io", 443, &l, &PanicResolver, Lane::Pilot).unwrap_err().reason,
+        REASON_EGRESS_RESOLVED_NON_PUBLIC
+    );
+}

@@ -214,11 +214,13 @@ REASON_EGRESS_ALLOWLIST_MISMATCH = "egress_allowlist_mismatch"
 REASON_EGRESS_BUDGET_EXCEEDED = "egress_budget_exceeded"
 REASON_TRANSPORT_NOT_PILOT = "transport_not_pilot"
 REASON_STRIPE_LIVE_KEY_REFUSED = "stripe_live_key_refused"
+REASON_EGRESS_PIN_MISMATCH = "egress_pin_mismatch"
+SSLIP_SUFFIX = "sslip.io"
 A4_REASONS = (
     REASON_RELAY_CONFIG, REASON_RELAY_REQUIRED, REASON_EGRESS_ALLOWLIST_CONFIG,
     REASON_EGRESS_NOT_ALLOWLISTED, REASON_EGRESS_RESOLVED_NON_PUBLIC, REASON_EGRESS_RESOLVE_FAILED,
     REASON_EGRESS_OFF, REASON_EGRESS_ALLOWLIST_MISMATCH, REASON_EGRESS_BUDGET_EXCEEDED,
-    REASON_TRANSPORT_NOT_PILOT, REASON_STRIPE_LIVE_KEY_REFUSED,
+    REASON_TRANSPORT_NOT_PILOT, REASON_STRIPE_LIVE_KEY_REFUSED, REASON_EGRESS_PIN_MISMATCH,
 )
 
 LOCAL_TEST_SITE_CIDR = ipaddress.ip_network("198.51.100.0/24")
@@ -283,6 +285,39 @@ def _is_refused_local_name(h):
 
 def is_n0_relay_host(h) -> bool:
     return _has_suffix(h, "iroh.network") or _has_suffix(h, "iroh.link") or "n0" in h.split(".")
+
+
+def is_sslip_host(h) -> bool:
+    return _has_suffix(h, SSLIP_SUFFIX)
+
+
+def _strict_octet(s):
+    if not s or len(s) > 3 or not s.isdigit() or not _is_ascii(s) or (len(s) > 1 and s[0] == "0"):
+        return None
+    n = int(s)
+    return n if n <= 255 else None
+
+
+def _octets4(parts):
+    if len(parts) != 4:
+        return None
+    o = [_strict_octet(x) for x in parts]
+    if any(x is None for x in o):
+        return None
+    return ipaddress.IPv4Address(".".join(map(str, o)))
+
+
+def sslip_embedded_ipv4(h):
+    """IPv4 embedded immediately before `.sslip.io` (dotted: the four labels before the suffix;
+    dashed: the one label before it is exactly a-b-c-d). Dotted wins. None if absent/invalid."""
+    if not isinstance(h, str) or not h.endswith("." + SSLIP_SUFFIX):
+        return None
+    labels = h[: -len(SSLIP_SUFFIX) - 1].split(".")
+    if len(labels) >= 4:
+        ip = _octets4(labels[-4:])
+        if ip is not None:
+            return ip
+    return _octets4(labels[-1].split("-"))
 
 
 def _parse_relay_parts(s):
@@ -399,24 +434,31 @@ def check_relay_required(direct_addrs, relay_url) -> None:
 
 
 class EgressAllow:
-    def __init__(self, entries):
+    def __init__(self, entries, pins=None):
         self._entries = entries
+        self._pins = dict(pins or {})
 
     def __eq__(self, other):
-        return isinstance(other, EgressAllow) and self._entries == other._entries
+        return isinstance(other, EgressAllow) and self._entries == other._entries and self._pins == other._pins
 
     @classmethod
-    def parse(cls, s):
+    def parse(cls, s, lane=LANE_PILOT):
+        """`host:port` or `host:port=IP`, comma-separated. *.sslip.io hosts are pinned to the
+        embedded IPv4. Same rules / reasons as rust EgressAllow::parse_for."""
         parts = [p.strip() for p in (s or "").split(",") if p.strip()]
         if not parts:
             raise GuardError(REASON_EGRESS_ALLOWLIST_CONFIG, "<empty>")
         out = set()
+        pins = {}
+        seen = {}
         for p in parts:
             def bad():
                 return GuardError(REASON_EGRESS_ALLOWLIST_CONFIG, p)
-            if any(c in p for c in "*[]/@"):
+            hp, eq, pin_s = p.partition("=")
+            hp, pin_s = hp.strip(), (pin_s.strip() if eq else None)
+            if any(c in hp for c in "*[]/@"):
                 raise bad()
-            h, sep, port_s = p.rpartition(":")
+            h, sep, port_s = hp.rpartition(":")
             if not sep or ":" in h:
                 raise bad()
             if _is_ip_literal(h):
@@ -429,14 +471,43 @@ class EgressAllow:
             host = normalize_hostname(h)
             if host is None or _is_refused_local_name(host):
                 raise bad()
-            out.add((host, port))
-        return cls(sorted(out))
+            explicit = None
+            if pin_s is not None:
+                bare = pin_s[1:-1] if pin_s.startswith("[") and pin_s.endswith("]") else pin_s
+                if not _is_ascii(bare) or "%" in bare:
+                    raise bad()
+                try:
+                    explicit = canonical_ip(ipaddress.ip_address(bare))
+                except ValueError:
+                    raise bad() from None
+                if not is_public_egress_ip(explicit, lane):
+                    raise bad()
+            embedded = None
+            if is_sslip_host(host):
+                embedded = sslip_embedded_ipv4(host)
+                if embedded is None or not is_public_egress_ip(embedded, lane):
+                    raise bad()
+            if embedded is not None and explicit is not None and embedded != explicit:
+                raise GuardError(REASON_EGRESS_PIN_MISMATCH, f"{host}:{port} sslip={embedded} pin={explicit}")
+            pin = embedded if embedded is not None else explicit
+            key = (host, port)
+            if key in seen and seen[key] != pin:
+                raise GuardError(REASON_EGRESS_PIN_MISMATCH, f"{host}:{port} listed with different pins")
+            seen[key] = pin
+            if pin is not None:
+                pins[key] = pin
+            out.add(key)
+        return cls(sorted(out), pins)
 
     def entries(self):
         return list(self._entries)
 
+    def pin(self, host, port):
+        return self._pins.get((host, port))
+
     def canonical(self) -> str:
-        return "".join(f"{h}:{p}\n" for h, p in self._entries)
+        return "".join(f"{h}:{p}={self._pins[(h, p)]}\n" if (h, p) in self._pins else f"{h}:{p}\n"
+                       for h, p in self._entries)
 
     def version(self) -> str:
         return _hashlib.sha256(self.canonical().encode()).hexdigest()
@@ -477,6 +548,11 @@ def check_egress_resolved(host, ips, lane=LANE_PILOT):
 def resolve_and_pin(host, port, allow, resolver, lane=LANE_PILOT):
     """resolver(host, port) -> list of IPs (raise on failure). Connect to the returned (ip, port) only."""
     h = check_egress_dest(host, port, allow)
+    pin = allow.pin(h, port)
+    if pin is not None:  # explicit =IP or *.sslip.io: never ask DNS
+        if not is_public_egress_ip(pin, lane):
+            raise GuardError(REASON_EGRESS_RESOLVED_NON_PUBLIC, f"{h}->{pin}")
+        return pin, port
     try:
         ips = list(resolver(h, port))
     except Exception:
@@ -815,6 +891,80 @@ def selftest_pilot() -> int:
     local = lambda host, port: [ip("198.51.100.10")]
     assert resolve_and_pin("echo.example.org", 443, pa, local, LANE_LOCAL) == (ip("198.51.100.10"), 443); n += 1
     _expect_reason(lambda: resolve_and_pin("echo.example.org", 443, pa, local), REASON_EGRESS_RESOLVED_NON_PUBLIC, "testnet pilot"); n += 1
+
+    # A4.1 amendment: sslip.io / pinned hosts (same cases as rust pilot_tests.rs)
+    v4 = ipaddress.IPv4Address
+    assert is_sslip_host("sslip.io") and is_sslip_host("a.sslip.io") and not is_sslip_host("notsslip.io"); n += 1
+    for hh, want in (("relay.93.184.215.14.sslip.io", "93.184.215.14"), ("93.184.215.14.sslip.io", "93.184.215.14"),
+                     ("93-184-215-14.sslip.io", "93.184.215.14"), ("echo.93-184-215-14.sslip.io", "93.184.215.14"),
+                     ("x.1.93.184.215.14.sslip.io", "93.184.215.14"), ("203.0.113.7.sslip.io", "203.0.113.7"),
+                     ("0.0.0.0.sslip.io", "0.0.0.0")):
+        assert sslip_embedded_ipv4(hh) == v4(want), hh; n += 1
+    for hh in ("sslip.io", "relay.sslip.io", "1.2.3.sslip.io", "1-2-3.sslip.io", "1-2-3-4-5.sslip.io",
+               "relay-93-184-215-14.sslip.io", "93.184.215.256.sslip.io", "93.184.215.014.sslip.io",
+               "93-184-215-014.sslip.io", "93.184.215.14.sslip.io.evil.com", "93.184.215.14.example.org",
+               "93.184.215.14.xsslip.io"):
+        assert sslip_embedded_ipv4(hh) is None, hh; n += 1
+    sa = EgressAllow.parse("Echo.93.184.215.14.SSLIP.io.:443, relay.8-8-8-8.sslip.io:443")
+    assert sa.pin("echo.93.184.215.14.sslip.io", 443) == ip("93.184.215.14"); n += 1
+    assert sa.pin("relay.8-8-8-8.sslip.io", 443) == ip("8.8.8.8"); n += 1
+    assert sa.canonical() == "echo.93.184.215.14.sslip.io:443=93.184.215.14\nrelay.8-8-8-8.sslip.io:443=8.8.8.8\n"; n += 1
+    assert EgressAllow.parse("echo.198.51.100.10.sslip.io:443", LANE_LOCAL); n += 1
+    for s, ln in (("echo.198.51.100.10.sslip.io:443", LANE_PILOT), ("sslip.io:443", LANE_PILOT),
+                  ("relay.sslip.io:443", LANE_PILOT), ("echo.203.0.113.7.sslip.io:443", LANE_PILOT),
+                  ("echo.203.0.113.7.sslip.io:443", LANE_LOCAL), ("echo.10.0.0.1.sslip.io:443", LANE_LOCAL),
+                  ("echo.127.0.0.1.sslip.io:443", LANE_PILOT), ("meta.169-254-169-254.sslip.io:443", LANE_LOCAL),
+                  ("echo.192.168.1.1.sslip.io:443", LANE_PILOT), ("echo.1-2-3.sslip.io:443", LANE_PILOT),
+                  ("echo.93.184.215.14.sslip.io:80", LANE_PILOT)):
+        _expect_reason(lambda: EgressAllow.parse(s, ln), REASON_EGRESS_ALLOWLIST_CONFIG, f"{s} {ln}"); n += 1
+    xa = EgressAllow.parse("echo.example.org:443=93.184.215.14,v6.example.org:443=[2606:4700::1],plain.example.org:443")
+    assert xa.pin("echo.example.org", 443) == ip("93.184.215.14") and xa.pin("v6.example.org", 443) == ip("2606:4700::1"); n += 1
+    assert xa.pin("plain.example.org", 443) is None; n += 1
+    assert xa.canonical() == ("echo.example.org:443=93.184.215.14\nplain.example.org:443\n"
+                              "v6.example.org:443=2606:4700::1\n"); n += 1
+    xb = EgressAllow.parse("v6.example.org:443=2606:4700::1,m.example.org:443=::ffff:8.8.8.8")
+    assert xb.pin("v6.example.org", 443) == ip("2606:4700::1") and xb.pin("m.example.org", 443) == ip("8.8.8.8"); n += 1
+    assert len(EgressAllow.parse("echo.8.8.8.8.sslip.io:443=8.8.8.8,echo.8.8.8.8.sslip.io:443").entries()) == 1; n += 1
+    for s in ("echo.example.org:443=", "echo.example.org:443=nope", "echo.example.org:443=10.0.0.1",
+              "echo.example.org:443=169.254.169.254", "echo.example.org:443=198.51.100.10",
+              "echo.example.org:443=fe80::1%eth0", "echo.example.org:443=1.2.3.4:443", "1.2.3.4:443=1.2.3.4",
+              "*.example.org:443=8.8.8.8"):
+        _expect_reason(lambda: EgressAllow.parse(s), REASON_EGRESS_ALLOWLIST_CONFIG, s); n += 1
+    assert EgressAllow.parse("echo.example.org:443=198.51.100.10", LANE_LOCAL); n += 1
+    for s in ("echo.8.8.8.8.sslip.io:443=1.1.1.1", "echo.example.org:443=8.8.8.8,echo.example.org:443=1.1.1.1",
+              "echo.example.org:443=8.8.8.8,echo.example.org:443"):
+        e = _expect_reason(lambda: EgressAllow.parse(s), REASON_EGRESS_PIN_MISMATCH, s)
+        assert e.log_line().startswith("a4_refuse_egress_pin_mismatch:"); n += 1
+    assert EgressAllow.parse("echo.example.org:443").version() == _hashlib.sha256(b"echo.example.org:443\n").hexdigest(); n += 1
+    p1 = EgressAllow.parse("echo.example.org:443=8.8.8.8")
+    assert p1.version() == _hashlib.sha256(b"echo.example.org:443=8.8.8.8\n").hexdigest(); n += 1
+    assert p1.version() != EgressAllow.parse("echo.example.org:443=1.1.1.1").version(); n += 1
+    assert EgressAllow.parse("echo.8.8.8.8.sslip.io:443").version() == \
+        _hashlib.sha256(b"echo.8.8.8.8.sslip.io:443=8.8.8.8\n").hexdigest(); n += 1
+
+    def panic_resolver(host, port):
+        raise AssertionError(f"resolver called for pinned host {host}")
+    pp = EgressAllow.parse("echo.93.184.215.14.sslip.io:443,relay.8-8-8-8.sslip.io:443,pinned.example.org:443=1.1.1.1")
+    assert resolve_and_pin("ECHO.93.184.215.14.sslip.io.", 443, pp, panic_resolver) == (ip("93.184.215.14"), 443); n += 1
+    assert resolve_and_pin("relay.8-8-8-8.sslip.io", 443, pp, panic_resolver) == (ip("8.8.8.8"), 443); n += 1
+    assert resolve_and_pin("pinned.example.org", 443, pp, panic_resolver) == (ip("1.1.1.1"), 443); n += 1
+    _expect_reason(lambda: resolve_and_pin("echo.1.1.1.1.sslip.io", 443, pp, panic_resolver),
+                   REASON_EGRESS_NOT_ALLOWLISTED, "sslip off-list"); n += 1
+    liar_calls = []
+    liar_ans = {"echo.93.184.215.14.sslip.io": "169.254.169.254", "relay.8-8-8-8.sslip.io": "2.2.2.2",
+                "pinned.example.org": "127.0.0.1"}
+
+    def liar(host, port):
+        liar_calls.append(host)
+        return [ip(liar_ans[host])]
+    assert resolve_and_pin("echo.93.184.215.14.sslip.io", 443, pp, liar) == (ip("93.184.215.14"), 443); n += 1
+    assert resolve_and_pin("relay.8-8-8-8.sslip.io", 443, pp, liar) == (ip("8.8.8.8"), 443); n += 1
+    assert resolve_and_pin("pinned.example.org", 443, pp, liar) == (ip("1.1.1.1"), 443); n += 1
+    assert liar_calls == []; n += 1
+    lp = EgressAllow.parse("echo.198.51.100.10.sslip.io:443", LANE_LOCAL)
+    assert resolve_and_pin("echo.198.51.100.10.sslip.io", 443, lp, panic_resolver, LANE_LOCAL) == (ip("198.51.100.10"), 443); n += 1
+    _expect_reason(lambda: resolve_and_pin("echo.198.51.100.10.sslip.io", 443, lp, panic_resolver),
+                   REASON_EGRESS_RESOLVED_NON_PUBLIC, "local pin in pilot"); n += 1
 
     v = EgressAllow.parse("echo.example.org:443").version()
     det = lambda sw, t: _expect_reason(lambda: sw.check(t), REASON_EGRESS_OFF, "sw").detail
