@@ -36,7 +36,9 @@ pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 6000;
 pub struct IrohStream {
     pub conn: Connection,
     pub send: SendStream,
-    pub recv: RecvStream,
+    /// The bi stream's RecvStream, or (iroh_pilot) a pipe fed by the frame reader that keeps
+    /// DATA/CLOSE out of the request/response path.
+    pub recv: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>,
 }
 
 impl IrohStream {
@@ -336,8 +338,63 @@ async fn handle_incoming(
     let path = path_counters(&ep);
     tracing::info!("iroh peer connected remote={remote} path={path}");
     println!("IROH_PEER_CONNECTED remote={remote} path={path}");
+    let recv: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin> = match st.pilot.clone() {
+        None => Box::new(recv),
+        Some(p) => Box::new(spawn_pilot_reader(p, recv, remote.to_string())),
+    };
     let pc = PeerConn::Iroh(IrohStream { conn, send, recv });
     crate::relay::handle_peer_conn(st, pc, Some(remote.to_string())).await
+}
+
+/// A4.3: own the Peer's RecvStream. DATA / CLOSE go to the pilot stream registry; the
+/// request/response frames (HELLO, AUTH_OK, AUTH_REJECT, ERR) are passed on through a pipe to
+/// the existing reader; anything else is dropped (logged).
+fn spawn_pilot_reader(
+    p: std::sync::Arc<crate::egress::Pilot>,
+    recv: RecvStream,
+    remote: String,
+) -> tokio::io::DuplexStream {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let (mut tx, rx) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        // One frame ≤ a 16 KiB DATA chunk in base64 + envelope; longer lines end the connection.
+        const MAX_LINE: u64 = 64 * 1024;
+        let mut rd = tokio::io::BufReader::with_capacity(64 * 1024, recv);
+        let mut buf = Vec::with_capacity(32 * 1024);
+        loop {
+            buf.clear();
+            match (&mut rd).take(MAX_LINE).read_until(b'\n', &mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) if buf.last() != Some(&b'\n') && buf.len() as u64 >= MAX_LINE => {
+                    tracing::warn!("pilot reader: frame over {MAX_LINE} bytes from {remote}; closing");
+                    break;
+                }
+                Ok(_) => {}
+            }
+            let line = String::from_utf8_lossy(&buf);
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(t).unwrap_or_default();
+            if crate::egress::dispatch_from_peer(&p, &remote, &v) {
+                continue;
+            }
+            match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+                "HELLO" | "AUTH_OK" | "AUTH_REJECT" | "ERR" => {
+                    if tx.write_all(format!("{t}\n").as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+                other => tracing::debug!("pilot reader: dropped frame type={other:?} from {remote}"),
+            }
+        }
+        let n = p.close_all("peer_gone", None, Some(&remote));
+        if n > 0 {
+            println!("A43_PEER_GONE remote={remote} closed={n}");
+        }
+    });
+    rx
 }
 
 /// Ticket binding (A3.3): `peer_endpoint_id` from the ticket (payload or top level) must parse

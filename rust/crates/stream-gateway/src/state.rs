@@ -38,6 +38,8 @@ pub struct AppState {
     pub gateway_endpoint_id: Option<String>,
     /// A4.2: the one relay this Gateway uses (`iroh_pilot` only).
     pub relay_url: Option<String>,
+    /// A4.3: kill switch + allowlist + DATA pipes (`iroh_pilot` only).
+    pub pilot: Option<Arc<crate::egress::Pilot>>,
 }
 
 impl AppState {
@@ -54,6 +56,7 @@ impl AppState {
             relay_listen,
             gateway_endpoint_id: None,
             relay_url: None,
+            pilot: None,
         }
     }
 }

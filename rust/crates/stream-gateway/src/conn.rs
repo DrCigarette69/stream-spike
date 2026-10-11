@@ -48,7 +48,7 @@ impl AsyncRead for PeerConn {
         match self.get_mut() {
             PeerConn::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(feature = "iroh")]
-            PeerConn::Iroh(s) => Pin::new(&mut s.recv).poll_read(cx, buf),
+            PeerConn::Iroh(s) => Pin::new(&mut *s.recv).poll_read(cx, buf),
         }
     }
 }

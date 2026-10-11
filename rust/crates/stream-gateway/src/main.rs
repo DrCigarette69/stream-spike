@@ -5,6 +5,7 @@ mod admin;
 mod config;
 mod conn;
 mod control;
+mod egress;
 #[cfg(feature = "iroh")]
 mod iroh_local;
 mod meter;
@@ -57,6 +58,21 @@ async fn main() {
             st.relay_listen = iroh_local::advertised_addr(&ep, &icfg).to_string();
             if let Some(p) = &icfg.pilot {
                 st.relay_url = Some(p.relay_url.to_string());
+                // A4.3: no allowlist -> refuse to start (fail closed); switch starts off.
+                let pe = std::sync::Arc::new(egress::Pilot::from_env().unwrap_or_else(|e| {
+                    eprintln!("iroh_pilot refused: {}", e.log_line());
+                    std::process::exit(2);
+                }));
+                println!(
+                    "A43_EGRESS_CONFIG allowlist_version={} entries={} byte_cap={} local_public_egress={}",
+                    pe.version,
+                    pe.allow.entries().len(),
+                    pe.cap,
+                    stream_proto::guard::public_egress_env()
+                );
+                egress::spawn_poller(st.clone(), pe.clone());
+                egress::spawn_watchdog(pe.clone());
+                st.pilot = Some(pe);
                 println!(
                     "IROH_PILOT_READY endpoint_id={} relay_url={} path_selection=relay_only",
                     ep.id(),

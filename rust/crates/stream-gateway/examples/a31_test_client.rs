@@ -14,6 +14,13 @@
 //!   RelayMode::Custom(<URL>) + PathSelection::RelayOnly, no direct addr in the dial, discovery off.
 //!   URL must pass guard::RelayAllow::parse(--relay-allow, Lane::build()) + check_relay_url_with.
 //!   Extra markers: RELAY_ONLINE, RELAY_UNREACHABLE, CONNECT_FAILED, PATH <conn_type>.
+//!
+//! A4.3 egress stand-in (`--egress-allowlist host:port,..`; test stand-in for the Peer's A4.4 data
+//! path, NOT the Peer): AUTH_TICKET dest -> guard::resolve_and_pin(allowlist, system resolver,
+//! Lane::build()) else AUTH_REJECT {error, egress_denied:true}; OPEN -> TCP to the pinned IP;
+//! DATA (b64) <-> socket; site EOF -> CLOSE {reason:"site_closed"}; Gateway CLOSE -> drop socket.
+//! Markers: EGRESS_REFUSED <reason> <log>, SITE_CONNECTED sid addr, RX_CLOSE sid reason detail,
+//! TX_CLOSE sid reason, RX_EGRESS_STATE on=.. version=.. (deduped).
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
@@ -228,8 +235,140 @@ mod pilot {
             }
         };
         out(format!("DIALED gateway={} relay={relay}", conn.remote_id()));
-        speak(&ep, conn, peer_id, my_id).await;
+        match arg(args, "--egress-allowlist") {
+            Some(list) => egress::speak(conn, peer_id, my_id, &list).await,
+            None => speak(&ep, conn, peer_id, my_id).await,
+        }
         ep.close().await;
+    }
+}
+
+#[cfg(feature = "iroh_pilot")]
+mod egress {
+    use super::*;
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use stream_proto::relay::{Close, Data, MAX_DATA_CHUNK};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{mpsc, Mutex};
+
+    type Tx = Arc<Mutex<iroh::endpoint::SendStream>>;
+
+    async fn send(tx: &Tx, v: &impl serde::Serialize) -> bool {
+        tx.lock().await.write_all(&ndjson_line(v).unwrap()).await.is_ok()
+    }
+
+    pub async fn speak(conn: iroh::endpoint::Connection, peer_id: String, hello_id: String, list: &str) {
+        let lane = guard::Lane::build();
+        let allow = match guard::EgressAllow::parse(list) {
+            Ok(a) => a,
+            Err(e) => {
+                out(format!("REFUSED {} {}", e.reason(), e.log_line()));
+                std::process::exit(3);
+            }
+        };
+        out(format!("EGRESS_STANDIN allowlist_version={}", allow.version()));
+        let (s, recv) = conn.open_bi().await.expect("open_bi");
+        let tx: Tx = Arc::new(Mutex::new(s));
+        send(&tx, &Hello::new(peer_id, hello_id, "v1", "always_on")).await;
+        let mut lines = BufReader::with_capacity(64 * 1024, recv).lines();
+        let mut pinned: HashMap<String, SocketAddr> = HashMap::new();
+        let mut sites: HashMap<String, mpsc::Sender<Option<Vec<u8>>>> = HashMap::new();
+        let mut last_state = String::new();
+        loop {
+            let line = tokio::select! {
+                l = lines.next_line() => match l {
+                    Ok(Some(l)) => l,
+                    Ok(None) => { out("STREAM_EOF"); break; }
+                    Err(e) => { out(format!("STREAM_ERR {e}")); break; }
+                },
+                r = conn.closed() => { out(format!("CONN_CLOSED {r}")); break; }
+            };
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+            let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            let sid = v.get("stream_id").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            match t {
+                "EGRESS_STATE" => {
+                    let k = format!("on={} version={}", v["public_egress"], v["allowlist_version"].as_str().unwrap_or(""));
+                    if k != last_state {
+                        out(format!("RX_EGRESS_STATE {k}"));
+                        last_state = k;
+                    }
+                }
+                "DATA" => {
+                    let raw = serde_json::from_value::<Data>(v.clone()).ok().and_then(|d| d.bytes());
+                    if let (Some(site), Some(raw)) = (sites.get(&sid), raw) {
+                        let _ = site.send(Some(raw)).await;
+                    }
+                }
+                "AUTH_TICKET" => {
+                    out(format!("RX {line}"));
+                    let host = v.get("dest_host").and_then(|x| x.as_str()).unwrap_or("");
+                    let port = v.get("dest_port").and_then(|x| x.as_u64()).unwrap_or(0) as u16;
+                    let (h, a) = (host.to_string(), allow.clone());
+                    let r = tokio::task::spawn_blocking(move || guard::resolve_and_pin(&h, port, &a, &guard::StdResolver, lane))
+                        .await
+                        .unwrap();
+                    match r {
+                        Ok(addr) => {
+                            pinned.insert(sid, addr);
+                            send(&tx, &serde_json::json!({"type": "AUTH_OK"})).await;
+                        }
+                        Err(e) => {
+                            out(format!("EGRESS_REFUSED {} {}", e.reason(), e.log_line()));
+                            send(&tx, &serde_json::json!({"type": "AUTH_REJECT", "error": e.reason(), "egress_denied": true})).await;
+                        }
+                    }
+                }
+                "OPEN" => {
+                    out(format!("RX {line}"));
+                    let Some(addr) = pinned.remove(&sid) else {
+                        send(&tx, &Close::with_reason(&sid, "egress_not_allowlisted", None)).await;
+                        continue;
+                    };
+                    let (stx, srx) = mpsc::channel(256);
+                    sites.insert(sid.clone(), stx);
+                    tokio::spawn(site_pump(tx.clone(), sid, addr, srx));
+                }
+                "CLOSE" => {
+                    out(format!("RX_CLOSE {sid} reason={} detail={}", v["reason"].as_str().unwrap_or("-"), v["detail"].as_str().unwrap_or("-")));
+                    if let Some(site) = sites.remove(&sid) {
+                        let _ = site.send(None).await;
+                    }
+                }
+                _ => out(format!("RX {line}")),
+            }
+        }
+    }
+
+    async fn site_pump(tx: Tx, sid: String, addr: SocketAddr, mut rx: mpsc::Receiver<Option<Vec<u8>>>) {
+        let mut sock = match tokio::time::timeout(std::time::Duration::from_secs(5), tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(s)) => s,
+            _ => {
+                out(format!("TX_CLOSE {sid} site_connect_failed"));
+                send(&tx, &Close::with_reason(&sid, "site_connect_failed", None)).await;
+                return;
+            }
+        };
+        out(format!("SITE_CONNECTED {sid} {addr}"));
+        let mut buf = vec![0u8; MAX_DATA_CHUNK];
+        loop {
+            tokio::select! {
+                r = sock.read(&mut buf) => match r {
+                    Ok(0) | Err(_) => {
+                        out(format!("TX_CLOSE {sid} site_closed"));
+                        send(&tx, &Close::with_reason(&sid, "site_closed", None)).await;
+                        return;
+                    }
+                    Ok(n) => { if !send(&tx, &Data::new(&sid, &buf[..n])).await { return; } }
+                },
+                m = rx.recv() => match m {
+                    Some(Some(raw)) => { if sock.write_all(&raw).await.is_err() { return; } }
+                    _ => { out(format!("SITE_DROPPED {sid}")); return; }
+                },
+            }
+        }
     }
 }
 

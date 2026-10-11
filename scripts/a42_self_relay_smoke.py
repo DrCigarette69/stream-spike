@@ -55,6 +55,7 @@ N0_RELAY = "https://use1-1.relay.n0.iroh.iroh.link./"
 GW_IROH = "10.73.0.1:9102"
 CONTROL = "http://10.73.0.254:8080"
 GW_HTTP = "http://127.0.0.1:1080"
+EGRESS_ALLOW = "example.com:443"
 USER = os.environ.get("USER") or subprocess.check_output(["id", "-un"], text=True).strip()
 procs: list[subprocess.Popen] = []
 
@@ -154,6 +155,9 @@ def gw_env(extra=None):
     return base_env({
         "CONTROL_URL": CONTROL, "SPIKE_LISTEN_PROXY": "127.0.0.1:1080", "SPIKE_TRANSPORT": "iroh_pilot",
         "SPIKE_IROH_LISTEN": GW_IROH, "SPIKE_GATEWAY_ENDPOINT_ID": DEV_ID, "SPIKE_RELAY_ALLOW_URL": RELAY_URL,
+        # A4.3: iroh_pilot Gateways need an allowlist; egress is switched on (Control flag) so the
+        # ticket reaches the Peer, whose own SPIKE_PUBLIC_EGRESS stays off.
+        "SPIKE_EGRESS_ALLOWLIST": EGRESS_ALLOW, "SPIKE_PUBLIC_EGRESS": "1",
         **(extra or {}),
     })
 
@@ -285,8 +289,12 @@ def body() -> int:
         "SPIKE_DB": tmp / "control.sqlite", "SPIKE_LISTEN": "10.73.0.254:8080", "SPIKE_TICKET_SECRET": SECRET,
         "FIXTURES": ROOT / "fixtures", "SPIKE_TRANSPORT": "iroh_pilot", "SPIKE_A4_LANE": "local",
         "SPIKE_RELAY_ALLOW_URL": RELAY_URL, "SPIKE_GATEWAY_ENDPOINT_ID": DEV_ID, "PYTHONPATH": ROOT / "control",
+        "SPIKE_EGRESS_ALLOWLIST": EGRESS_ALLOW,
     }), "control")
     wait_http("a42-relay", CONTROL + "/health")
+    st, r = ns_http("a42-relay", "POST", CONTROL + "/v1/admin/egress", {"public_egress": True})
+    if st != 200 or r.get("public_egress") is not True:
+        fail(f"control egress flag on: {st} {r}")
     gw = Proc("a42-gw", [GW], gw_env(), "gateway")
     gw.expect("IROH_PILOT_READY", timeout=30)
     wait_http("a42-gw", GW_HTTP + "/health")
@@ -371,7 +379,7 @@ def body() -> int:
     ok(f"Control iroh_pilot ticket: relay_url={pl['relay_url']} direct_addrs={pl['direct_addrs']} "
        f"peer_endpoint_id={cid[:12]}…")
     st, r = ns_http("a42-gw", "POST", GW_HTTP + "/gw/start", {"peer_id": sess["peer_id"], "stream_id": sess["stream_id"],
-                    "ticket_json": sess["ticket_json"], "dest_host": "echo.local", "dest_port": 443})
+                    "ticket_json": sess["ticket_json"], "dest_host": "example.com", "dest_port": 443})
     if real:
         p2 = "real stream-peer"
     else:
@@ -381,10 +389,10 @@ def body() -> int:
         if not p2.startswith("PATH relay ") or " udp_datagrams=0 " not in p2:
             fail(f"after ticket: client {p2}")
     if real:
-        # Kill switch is off by default (SPIKE_PUBLIC_EGRESS unset, no Control egress flag until A4.3), so
-        # the real Peer verifies the relay-bound ticket and then refuses with egress_off (fail closed).
+        # The Gateway's switch is on (A4.3), the Peer's SPIKE_PUBLIC_EGRESS is unset, so the real Peer
+        # verifies the relay-bound ticket and then refuses with egress_off (fail closed).
         # A relay_url problem would be relay_refused / relay_required instead.
-        if st != 403 or r.get("error") != "egress_off":
+        if st != 403 or r.get("error") != "egress_off" or r.get("refused_at") == "gateway":
             fail(f"/gw/start (real peer, egress off) {st} {r}")
     elif st != 200 or not r.get("started"):
         fail(f"/gw/start {st} {r} {p2}")
@@ -393,7 +401,7 @@ def body() -> int:
     if ip.get("path") != "relay" or ip.get("udp_send") or ip.get("udp_recv"):
         fail(f"after ticket: gateway {ip}")
     if real:
-        ok(f"ticket over relay: real peer accepted relay_url, answered {r.get('error')} (kill switch off by default); "
+        ok(f"ticket over relay: real peer accepted relay_url, answered {r.get('error')} (Peer's SPIKE_PUBLIC_EGRESS off; Gateway switch on); "
            f"/gw/start {st}; gateway /health iroh_path={ip}")
     else:
         ok(f"ticket over relay: /gw/start {st} started=True; client AUTH_OK -> OPEN; {p2.strip()}; "

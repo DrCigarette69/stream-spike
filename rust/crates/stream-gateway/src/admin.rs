@@ -23,6 +23,7 @@ pub fn router(st: AppState) -> Router {
         .route("/gw/peers", get(gw_peers))
         .route("/gw/start", post(gw_start))
         .route("/gw/stop", post(gw_stop))
+        .route("/gw/pilot", get(gw_pilot))
         .route("/gw/inject_bad_ticket", post(gw_inject_bad_ticket))
         .with_state(st)
 }
@@ -52,7 +53,21 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
             v["iroh_path"] = c;
         }
     }
+    if let Some(p) = &st.pilot {
+        let s = p.status();
+        v["public_egress_effective"] = json!(s.is_ok());
+        v["egress_reason"] = json!(s.as_ref().err().map(|e| e.reason()));
+        v["egress_detail"] = json!(s.as_ref().err().map(|e| e.detail.clone()));
+    }
     Json(v)
+}
+
+/// A4.3: kill-switch state, allowlist version, open/closed pilot streams (metadata only).
+async fn gw_pilot(State(st): State<AppState>) -> (StatusCode, Json<Value>) {
+    match &st.pilot {
+        Some(p) => (StatusCode::OK, Json(p.snapshot())),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": "transport_not_pilot"}))),
+    }
 }
 
 async fn gw_peers(State(st): State<AppState>) -> Json<Value> {
@@ -99,6 +114,18 @@ async fn gw_start(
     State(st): State<AppState>,
     Json(body): Json<StartBody>,
 ) -> (StatusCode, Json<Value>) {
+    // A4.3 (iroh_pilot): kill switch -> allowlist -> budget, before anything reaches the Peer.
+    if let Some(p) = &st.pilot {
+        if let Err(e) = p.check_open(&body.peer_id, &body.dest_host, body.dest_port) {
+            let line = e.log_line();
+            println!("{line} stream={}", body.stream_id);
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": e.reason(), "code": e.reason(), "detail": e.detail, "refused_at": "gateway" })),
+            );
+        }
+    }
+
     let (code, chk) = control::dest_check(&st, &body.dest_host, body.dest_port).await;
     if code != 200 || !chk.get("allowed").and_then(|v| v.as_bool()).unwrap_or(false) {
         return (
@@ -133,6 +160,22 @@ async fn gw_start(
         );
     }
 
+    // A4.3: register the DATA pipe before OPEN so an early Peer DATA/CLOSE is never lost.
+    let mut pipe_addr = None;
+    if let Some(p) = &st.pilot {
+        let ep = st.peers.read().await.get(&body.peer_id).and_then(|m| m.auth_endpoint_id.clone());
+        let Some(ep) = ep else {
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": "peer_offline", "code": "auth_ticket_failed" })));
+        };
+        let dest = format!("{}:{}", body.dest_host, body.dest_port);
+        match crate::egress::start_pipe(st.clone(), p.clone(), body.peer_id.clone(), ep, body.stream_id.clone(), dest).await {
+            Ok(a) => pipe_addr = Some(a),
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "pipe_bind_failed", "detail": e.to_string() })))
+            }
+        }
+    }
+
     let (ok, why) = relay::open_stream_to_peer(
         &st,
         &body.peer_id,
@@ -143,6 +186,10 @@ async fn gw_start(
     )
     .await;
     if !ok {
+        if let Some(p) = &st.pilot {
+            // Peer refused (AUTH_REJECT): end the pipe without sending it a CLOSE.
+            p.close_stream(&body.stream_id, (why.clone(), Some("open_refused".into()), true));
+        }
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": why, "code": "auth_ticket_failed" })),
@@ -164,17 +211,22 @@ async fn gw_start(
         );
     }
 
-    meter::spawn_meter(st.clone(), body.stream_id.clone(), body.peer_id.clone());
+    // Pilot streams carry real DATA (no synthetic BYTES meter); usage flushes from the pipe.
+    if pipe_addr.is_none() {
+        meter::spawn_meter(st.clone(), body.stream_id.clone(), body.peer_id.clone());
+    }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "started": true,
-            "stream_id": body.stream_id,
-            "denylist_version": chk.get("denylist_version"),
-            "alpn": ALPN,
-        })),
-    )
+    let mut out = json!({
+        "started": true,
+        "stream_id": body.stream_id,
+        "denylist_version": chk.get("denylist_version"),
+        "alpn": ALPN,
+    });
+    if let (Some(a), Some(p)) = (pipe_addr, &st.pilot) {
+        out["pipe_addr"] = json!(a.to_string());
+        out["allowlist_version"] = json!(p.version);
+    }
+    (StatusCode::OK, Json(out))
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,7 +251,13 @@ async fn gw_stop(State(st): State<AppState>, Json(body): Json<StopBody>) -> Json
         }
     };
     if let (Some(pid), Some(sid)) = (peer_id, stream_id.clone()) {
-        relay::close_stream_on_peer(&st, &pid, &sid).await;
+        let piped = st.pilot.as_ref().map(|p| p.streams.lock().unwrap().contains_key(&sid)).unwrap_or(false);
+        if piped {
+            // Pilot pipe sends CLOSE {reason: gw_stop} itself and logs the metadata line.
+            st.pilot.as_ref().unwrap().close_stream(&sid, ("gw_stop".into(), None, false));
+        } else {
+            relay::close_stream_on_peer(&st, &pid, &sid).await;
+        }
     }
     Json(json!({ "stopped": stream_id }))
 }
