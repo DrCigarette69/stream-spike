@@ -127,8 +127,8 @@ SPIKE_A3=1 bash scripts/demo_alpha.sh                        # still → A3_IROH
 
 # Pilot run (A4.9, Jeff's devices only; values from the locked config, not this doc):
 SPIKE_TRANSPORT=iroh_pilot SPIKE_PUBLIC_EGRESS=1 \
-SPIKE_RELAY_ALLOW_URL=https://<our-relay-host>/ \
-SPIKE_EGRESS_ALLOWLIST=<test-site-1>:443,<test-site-2>:443 \
+SPIKE_RELAY_ALLOW_URL=https://catnet.world/ \
+SPIKE_EGRESS_ALLOWLIST=echo.catnet.world:443,example.com:443 \
 SPIKE_ISP_ACK_VERSION=<v> SPIKE_IROH_KEY_PATH=<per-device> stream-peer
 ```
 
@@ -136,8 +136,8 @@ Done = A4.0–A4.8 green on one tip with every existing green unchanged, then A4
 
 ## Risks / open questions
 
-1. **Where the relay (and Gateway + Control) run.** Jeff's box vs a small VPS. Peers on home networks must reach the relay and Control over the internet; this box isn't reachable from outside. Proposal: relay + Gateway + Control on one small VPS, TLS via Let's Encrypt on a hostname we own, Gateway client/admin bound to localhost (SSH tunnel). Needs Jeff's call and a domain.
-2. **Test-site allowlist contents.** Proposal: 1–2 hosts **we control** (a tiny self-hosted echo/httpbin-style service on the VPS hostname, e.g. `echo.<our-domain>:443`), plus at most `example.com:443` as a third-party sanity target. Avoid CDN-fronted sites: on shared CDN IPs, SNI/Host could reach other tenants (domain fronting), which the host:port check can't see.
+1. **Where the relay (and Gateway + Control) run.** **Locked (Jeff, 2026-10-11):** Oracle Cloud Always Free (Ampere A1) + domain `catnet.world` (Namecheap). Relay URL `https://catnet.world/`. Gateway client/admin stay on localhost (SSH tunnel). Deploy assets: `deploy/oracle/`. `stream-relay` TLS mode is still refused (`relay_tls_todo`); pilot can use upstream `iroh-relay` ACME until the deploy slice enables it.
+2. **Test-site allowlist contents.** Proposal: 1–2 hosts **we control** (a tiny self-hosted echo/httpbin-style service on the VPS hostname, e.g. `echo.catnet.world:443`), plus at most `example.com:443` as a third-party sanity target. Avoid CDN-fronted sites: on shared CDN IPs, SNI/Host could reach other tenants (domain fronting), which the host:port check can't see.
 3. **Jeff's ISP terms.** The P1 ack covers it legally only with counsel's wording; until then sharing is limited to Jeff's own devices and traffic stays tiny (byte cap).
 4. **Stripe webhook reachability.** Control must be reachable from Stripe (VPS public HTTPS, a tunnel, or `stripe listen` with Jeff's login). Test key + login only in Jeff's 1:1 with Platform.
 5. **Per-device keys.** Each device gets its own `SPIKE_IROH_KEY_PATH` (a shared key → `endpoint_mismatch`, as in A3.4). Keys are generated on the device and never leave it; Control records endpoint IDs at enroll.
