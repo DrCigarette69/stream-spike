@@ -111,6 +111,22 @@ def _init_db() -> None:
               stream_ids TEXT,
               created_at REAL
             );
+            CREATE TABLE IF NOT EXISTS stripe_topups(
+              intent_id TEXT PRIMARY KEY,
+              account_id TEXT NOT NULL,
+              amount_cents INTEGER NOT NULL,
+              currency TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at REAL,
+              credited_at REAL,
+              event_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS stripe_events(
+              event_id TEXT PRIMARY KEY,
+              type TEXT,
+              result TEXT,
+              ts REAL
+            );
             CREATE TABLE IF NOT EXISTS attribution(
               stream_id TEXT PRIMARY KEY,
               account_id TEXT,
@@ -446,6 +462,128 @@ def _host_denied(host: str, port: int) -> str | None:
     return None
 
 
+# ---- A4.6 Stripe test-mode top-up (TOM-26) ----
+# Key only from env STRIPE_TEST_SECRET_KEY (never logged/echoed); unset -> mock top-up only (A1.3).
+# Balance moves only on a verified payment_intent.succeeded webhook for a matching pending intent.
+STRIPE_API = "https://api.stripe.com"
+STRIPE_SIG_TOLERANCE_S = 300
+C2_TEST_BODY = [
+    "Add funds",
+    "Test mode: this uses a Stripe test card, so there's no real charge.",
+    "Funds added. Prepaid balance updated.",
+    "Reconnect or create a new session to keep going.",
+]
+C2_TEST_FAILED = "That test payment didn't go through. Your balance hasn't changed."
+
+
+def _stripe_key() -> str:
+    return os.environ.get("STRIPE_TEST_SECRET_KEY", "").strip()
+
+
+def _stripe_api_base() -> str:
+    """api.stripe.com only. STRIPE_API_BASE may point at a loopback fake for the keyless test lane."""
+    b = os.environ.get("STRIPE_API_BASE", "").strip().rstrip("/")
+    if not b:
+        return STRIPE_API
+    u = urlparse(b)
+    if u.scheme == "http" and u.hostname in ("127.0.0.1", "::1", "localhost") and not u.path:
+        return b
+    if b == STRIPE_API:
+        return b
+    raise ValueError("stripe_api_base_refused")
+
+
+def stripe_startup_check() -> None:
+    """Refuse to start with a non-test key (guard check_stripe_test_key logs the prefix only)."""
+    k = _stripe_key()
+    if not k:
+        return
+    try:
+        g = _guard()
+    except ImportError:
+        print("control refused: guard_unavailable (needed to check STRIPE_TEST_SECRET_KEY)", flush=True)
+        raise SystemExit(2)
+    try:
+        g.check_stripe_test_key(k)
+        _stripe_api_base()
+    except g.GuardError as e:
+        print(f"control refused: {e.log_line()}", flush=True)
+        raise SystemExit(2)
+    except ValueError as e:
+        print(f"control refused: {e}", flush=True)
+        raise SystemExit(2)
+    print("control stripe: test mode (key set, value not shown)", flush=True)
+
+
+def _stripe_call(method: str, path: str, form: dict | None = None) -> tuple[int, dict]:
+    """Stripe API with Bearer auth. Errors return code/type only (never echo the request or key)."""
+    import urllib.error  # noqa: PLC0415
+    import urllib.parse  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    data = urllib.parse.urlencode(form or {}).encode() if form is not None else None
+    req = urllib.request.Request(_stripe_api_base() + path, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + _stripe_key())
+    if data is not None:
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read() or b"{}").get("error", {})
+        except ValueError:
+            err = {}
+        key = _stripe_key()
+        msg = str(err.get("message", ""))[:200].replace(key, "<key>") if key else ""
+        e2 = {k: err.get(k) for k in ("type", "code", "decline_code", "param") if err.get(k)}
+        if msg:
+            e2["message"] = msg  # Stripe masks keys in messages; scrubbed again here
+        return e.code, {"error": e2}
+    except (OSError, ValueError) as e:
+        return 0, {"error": {"type": "stripe_unreachable", "detail": type(e).__name__}}
+
+
+def _stripe_sig_ok(raw: bytes, header: str, secret: str, now: float) -> str | None:
+    """Stripe-Signature `t=<ts>,v1=<hex>[,v1=..]`: HMAC-SHA256(secret, f"{t}.{raw}"). None = ok, else reason."""
+    parts = [p.split("=", 1) for p in (header or "").split(",") if "=" in p]
+    ts = [v for k, v in parts if k.strip() == "t"]
+    sigs = [v.strip() for k, v in parts if k.strip() == "v1"]
+    if not ts or not sigs:
+        return "signature_missing"
+    try:
+        t = int(ts[0])
+    except ValueError:
+        return "signature_malformed"
+    if abs(now - t) > STRIPE_SIG_TOLERANCE_S:
+        return "signature_expired"
+    want = hmac.new(secret.encode(), f"{t}.".encode() + raw, hashlib.sha256).hexdigest()
+    if not any(hmac.compare_digest(want, s) for s in sigs):
+        return "signature_invalid"
+    return None
+
+
+def _topup_view(row, bal=None) -> dict:
+    st = row["status"]
+    out = {
+        "intent_id": row["intent_id"],
+        "account_id": row["account_id"],
+        "amount_usd": row["amount_cents"] / 100.0,
+        "currency": row["currency"],
+        "status": st,
+        "screen": "c2_add_funds_test",
+        "rail": "stripe_test",
+        "user_copy": ["Add funds", "Test mode", "no real charge"] + (["Funds added"] if st == "succeeded" else []),
+        "body_lines": C2_TEST_BODY if st == "succeeded" else C2_TEST_BODY[:2],
+        "ux": f"UX c2_add_funds_test code=stripe_test_topup status={st}",
+    }
+    if st == "failed":
+        out["error_line"] = C2_TEST_FAILED
+    if bal is not None:
+        out["balance_usd"] = bal
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -474,6 +612,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/egress/state":
             with _lock:
                 return self._json(200, _egress_state())
+        if path.startswith("/v1/topup/test/"):
+            iid = path.rsplit("/", 1)[1]
+            with _lock:
+                c = _conn()
+                row = c.execute("SELECT * FROM stripe_topups WHERE intent_id=?", (iid,)).fetchone()
+                bal = row and c.execute("SELECT balance_usd FROM accounts WHERE id=?", (row["account_id"],)).fetchone()
+                c.close()
+            if not row:
+                return self._json(404, {"error": "not_found"})
+            return self._json(200, _topup_view(row, bal["balance_usd"] if bal else None))
         if path.startswith("/v1/capacity/"):
             return self._json(200, {"capacity": _capacity()})
         if path.startswith("/v1/sessions/"):
@@ -575,7 +723,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/v1/stripe/webhook":
+            return self._stripe_webhook()  # needs the raw body for the signature
         body = self._read_json()
+
+        if path == "/v1/topup/test":
+            return self._topup_test(body)
 
         if path == "/v1/admin/reset":
             with _lock:
@@ -584,7 +737,7 @@ class Handler(BaseHTTPRequestHandler):
                 _fixtures["country_paused"] = False
                 _fixtures["oversubscribed"] = False
                 c = _conn()
-                for t in ("quotes", "sessions", "ledger", "abuse_cases", "attribution"):
+                for t in ("quotes", "sessions", "ledger", "abuse_cases", "attribution", "stripe_topups", "stripe_events"):
                     c.execute(f"DELETE FROM {t}")
                 c.execute(
                     "UPDATE accounts SET balance_usd=5.0, frozen=0, aup_accepted=1, accrued_payout_usd=0 WHERE id='acct_demo'"
@@ -940,6 +1093,149 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
         return self._json(404, {"error": "not_found", "path": path})
+
+    def _topup_test(self, body):
+        if not _stripe_key():
+            return self._json(409, {"error": "stripe_test_unavailable", "code": "stripe_test_unavailable",
+                                    "fallback": "/v1/mock/topup", "screen": "c2_add_funds_mock"})
+        aid = body.get("account_id", "acct_demo")
+        try:
+            cents = int(round(float(body.get("amount_usd", 10.0)) * 100))
+        except (TypeError, ValueError):
+            return self._json(400, {"error": "invalid_amount", "code": "invalid_amount"})
+        if cents < 50 or cents > 100_000:  # Stripe USD minimum 0.50; pilot ceiling $1000
+            return self._json(400, {"error": "invalid_amount", "code": "invalid_amount"})
+        with _lock:
+            c = _conn()
+            acct = c.execute("SELECT id FROM accounts WHERE id=?", (aid,)).fetchone()
+            c.close()
+        if not acct:
+            return self._json(404, {"error": "account_not_found"})
+        form = {"amount": str(cents), "currency": "usd",
+                # payment_method_types is retired; card-only behaviour without redirects:
+                "automatic_payment_methods[enabled]": "true", "automatic_payment_methods[allow_redirects]": "never",
+                "description": "Stream pilot test-mode top-up", "metadata[account_id]": aid,
+                "metadata[rail]": "stream_stripe_test"}
+        if body.get("confirm_test_card"):
+            # Server-side confirmation with Stripe's test card token (test mode only; key checked at start).
+            form.update({"payment_method": "pm_card_visa", "confirm": "true"})
+        try:
+            code, pi = _stripe_call("POST", "/v1/payment_intents", form)
+        except ValueError as e:
+            return self._json(500, {"error": str(e)})
+        if code != 200 or not str(pi.get("id", "")).startswith("pi_"):
+            return self._json(502, {"error": "stripe_create_failed", "stripe_status": code, "stripe_error": pi.get("error")})
+        if pi.get("livemode") is not False:
+            return self._json(502, {"error": "stripe_livemode_refused"})
+        with _lock:
+            c = _conn()
+            c.execute(
+                "INSERT INTO stripe_topups(intent_id,account_id,amount_cents,currency,status,created_at) VALUES(?,?,?,?,?,?)",
+                (pi["id"], aid, cents, "usd", "pending", time.time()),
+            )
+            c.commit()
+            row = c.execute("SELECT * FROM stripe_topups WHERE intent_id=?", (pi["id"],)).fetchone()
+            bal = c.execute("SELECT balance_usd FROM accounts WHERE id=?", (aid,)).fetchone()["balance_usd"]
+            c.close()
+        out = _topup_view(row, bal)
+        out.update({"ok": True, "client_secret": pi.get("client_secret"), "stripe_status": pi.get("status"),
+                    "livemode": False, "note": "balance updates when Control receives payment_intent.succeeded"})
+        _emit("billing.stripe_test_pending", account_id=aid, intent_id=pi["id"], amount_usd=cents / 100.0,
+              screen="c2_add_funds_test")
+        print(f"{out['ux']} intent={pi['id']} amount_usd={cents / 100.0:.2f}", flush=True)
+        return self._json(200, out)
+
+    def _stripe_webhook(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(n) if n > 0 else b""
+        secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+        if not secret:
+            return self._json(503, {"error": "webhook_secret_unset"})
+        bad = _stripe_sig_ok(raw, self.headers.get("Stripe-Signature", ""), secret, time.time())
+        if bad:
+            print(f"stripe webhook refused: {bad}", flush=True)
+            return self._json(400, {"error": bad})
+        try:
+            ev = json.loads(raw)
+            eid, etype = str(ev["id"]), str(ev["type"])
+            obj = ev["data"]["object"]
+        except (ValueError, KeyError, TypeError):
+            return self._json(400, {"error": "event_malformed"})
+        if ev.get("livemode") is not False or obj.get("livemode") is not False:
+            print(f"stripe webhook refused: livemode_refused event={eid}", flush=True)
+            return self._json(400, {"error": "livemode_refused"})
+        with _lock:
+            c = _conn()
+            seen = c.execute("SELECT result FROM stripe_events WHERE event_id=?", (eid,)).fetchone()
+            c.close()
+        if seen:
+            return self._json(200, {"duplicate": True, "event_id": eid, "result": seen["result"]})
+
+        def record(result, code=200, **extra):
+            with _lock:
+                c2 = _conn()
+                c2.execute("INSERT OR IGNORE INTO stripe_events(event_id,type,result,ts) VALUES(?,?,?,?)",
+                           (eid, etype, result, time.time()))
+                c2.commit()
+                c2.close()
+            return self._json(code, {"event_id": eid, "result": result, **extra})
+
+        if etype not in ("payment_intent.succeeded", "payment_intent.payment_failed"):
+            return record("ignored")
+        iid = str(obj.get("id", ""))
+        with _lock:
+            c = _conn()
+            row = c.execute("SELECT * FROM stripe_topups WHERE intent_id=?", (iid,)).fetchone()
+            c.close()
+        if not row:
+            return record("unknown_intent", 400)
+        if row["status"] != "pending":
+            return record(f"not_pending:{row['status']}", 200)
+        if etype == "payment_intent.payment_failed":
+            with _lock:
+                c = _conn()
+                c.execute("UPDATE stripe_topups SET status='failed', event_id=? WHERE intent_id=? AND status='pending'", (eid, iid))
+                c.commit()
+                row = c.execute("SELECT * FROM stripe_topups WHERE intent_id=?", (iid,)).fetchone()
+                c.close()
+            print(f"UX c2_add_funds_test code=stripe_test_topup status=failed intent={iid}", flush=True)
+            return record("failed", 200, topup=_topup_view(row))
+        got = obj.get("amount_received", obj.get("amount"))
+        if got != row["amount_cents"] or str(obj.get("currency", "")).lower() != row["currency"]:
+            print(f"stripe webhook refused: amount_mismatch intent={iid}", flush=True)
+            return record("amount_mismatch", 400)
+        if obj.get("status") != "succeeded":
+            return record("status_not_succeeded", 400)
+        with _lock:
+            c = _conn()
+            cur = c.execute(
+                "UPDATE stripe_topups SET status='succeeded', credited_at=?, event_id=? WHERE intent_id=? AND status='pending'",
+                (time.time(), eid, iid),
+            )
+            if cur.rowcount != 1:
+                c.rollback()
+                c.close()
+                return record("not_pending:race", 200)
+            amt = row["amount_cents"] / 100.0
+            c.execute("UPDATE accounts SET balance_usd=balance_usd+? WHERE id=?", (amt, row["account_id"]))
+            c.execute(
+                "INSERT INTO ledger(entry_id,stream_id,kind,amount,account_id,peer_id,ts) VALUES(?,?,?,?,?,?,?)",
+                (f"led_{uuid.uuid4().hex[:12]}", iid, "topup_stripe_test", amt, row["account_id"], None, time.time()),
+            )
+            c.execute("INSERT OR IGNORE INTO stripe_events(event_id,type,result,ts) VALUES(?,?,?,?)",
+                      (eid, etype, "credited", time.time()))
+            c.commit()
+            row = c.execute("SELECT * FROM stripe_topups WHERE intent_id=?", (iid,)).fetchone()
+            bal = c.execute("SELECT balance_usd FROM accounts WHERE id=?", (row["account_id"],)).fetchone()["balance_usd"]
+            c.close()
+        view = _topup_view(row, bal)
+        ev2 = _emit("billing.stripe_test_topup", code="stripe_test_topup", account_id=row["account_id"],
+                    amount_usd=row["amount_cents"] / 100.0, balance_usd=bal, intent_id=iid, event_id=eid,
+                    screen="c2_add_funds_test", rail="stripe_test", user_copy=view["user_copy"])
+        print(f"{view['ux']} intent={iid} amount_usd={row['amount_cents'] / 100.0:.2f} balance_usd={bal:.2f}", flush=True)
+        for line in C2_TEST_BODY:
+            print(f"UX   {line}", flush=True)
+        return self._json(200, {"event_id": eid, "result": "credited", "topup": view, "event": ev2})
 
     def do_DELETE(self):
         path = urlparse(self.path).path
@@ -1324,6 +1620,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    stripe_startup_check()
     _init_db()
     # copy denylist next to module if fixtures mounted
     fixtures = Path("/fixtures/denylist.seed.json")
