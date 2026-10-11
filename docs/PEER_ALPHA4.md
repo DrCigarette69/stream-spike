@@ -104,7 +104,7 @@ other transports keep default signal handling). Start: `peer egress_budget path=
   frames no longer count toward the pilot budget (no double count).
 
 Tests: `pilot_egress_tests.rs` (injected resolver; loopback sockets only) and
-`scripts/a44_peer_egress_smoke.py` -> `A4.4_PEER_EGRESS_PART1_GREEN` (TEST-NET-2
+`scripts/a44_peer_egress_smoke.py` -> `A4.4_PEER_EGRESS_GREEN` (TEST-NET-2
 stand-in 198.51.100.10:443 on `lo` of a no-default-route netns, plus 3rd-stream refusal and a
 real-binary restart that keeps `bytes_today` and a corrupt counter that fails closed; a4_local lane injected
 in the test since the cargo feature isn't forwarded by stream-peer yet).
@@ -162,11 +162,11 @@ On-box hook (a4_local builds only; the name is not in pilot binaries):
 Gateway `AUTH_REJECT` / `endpoint_mismatch` is terminal for iroh_pilot as for iroh_local.
 A pilot egress P8 (`egress_*`) is not replaced by a later generic `connection_lost`.
 
-E2E (`scripts/a44_relay_path_e2e.py`, run by a44; A4.2 topology via `a42_netns_up.sh`, relay
+Relay-path e2e (now part of `scripts/a44_pilot_e2e.py`, run by a44; A4.2 topology, relay
 `http://10.73.0.254:3340/`, Peer .200): real relay-only connect, Gateway UDP counters 0 at
 connect / after ticket / after 3 s, Control relay ticket -> Peer `egress_off` (kill switch off
 until A4.3); hook=1 -> exact P8 line within 2 s, `not retrying`, one connect only.
-a44 marker stays `A4.4_PEER_EGRESS_PART1_GREEN` until A4.3 (Control egress flag + frames).
+a44 marker: `A4.4_PEER_EGRESS_GREEN` since the DATA pump (A4.3 on main).
 
 ## A4.1 amendment (pins) + A4.3 part 1 frames on the Peer
 
@@ -180,12 +180,22 @@ at startup before any state/admin exists, so they never reach P8 (a44 checks the
 The allowlist is never re-loaded at runtime; a Control-side load failure arrives as
 `public_egress:false` + version `""` -> P8 `egress_off` (flag off wins over the mismatch).
 
-Frames (Platform e20498d): `EGRESS_STATE` is parsed as `stream_proto::relay::EgressState`
+Frames (Platform e20498d / 9cff11c): `EGRESS_STATE` is parsed as `stream_proto::relay::EgressState`
 (type/public_egress/allowlist_version/ts required; malformed ignored -> stale -> off; `ts` is not
 age-checked, freshness is time of receipt). Peer CLOSE = `relay::Close::with_reason` (`reason`,
-no `detail`); Gateway CLOSE `reason`/`detail` are logged. **Not yet:** `DATA` frames are ignored
-(the A4.4 part 1 local sink still drains site bytes); wiring `DATA` <-> pinned socket is the Peer
-half of A4.3.
+no `detail`); Gateway CLOSE `reason`/`detail` are logged (`peer gateway_close ...`).
+
+## A4.4 DATA pump (`pilot_data.rs`)
+
+Gateway `DATA` -> that stream's queue (64 chunks) -> pinned site socket; site bytes -> `DATA`
+(<= 16384 raw bytes per frame) -> Gateway; site EOF/write error -> `CLOSE {reason: site_closed}`
+after the last DATA (both go through one per-session outbound channel, written by the session
+loop); Gateway `CLOSE` drops the socket, no echo. Budget counts only bytes read from / written
+to the pinned socket. Kill switch off / stale / mismatch / cap -> `close_all` (<= 5 s via the
+watchdog) with their CLOSE reasons. Session end closes all streams. The session loop now reads
+lines with a cancel-safe reader (`frames::LineReader`, `read_until` keeps partial bytes) so large
+DATA lines are never torn by the 200 ms tick. Bad / > 16 KiB / unknown-stream DATA is ignored.
+E2E: `scripts/a44_pilot_e2e.py` (run by a44) -> `A4.4_PEER_EGRESS_GREEN`.
 
 ## Open / asks
 - Kill-switch reason is `egress_off` everywhere (guard, fixture `reason_lines`, Peer).

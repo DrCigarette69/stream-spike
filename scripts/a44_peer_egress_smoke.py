@@ -14,13 +14,14 @@ the closed stream flushes the persistent byte counter. Then the real
 `stream-peer` binary (iroh_pilot) is started twice on that counter file
 (SIGTERM in between): bytes_today survives the restart; a corrupt file ->
 `a4_refuse_egress_budget:state_corrupt` + budget_state reported.
-Then scripts/a44_relay_path_e2e.py: real relay-only dial on the A4.2 netns topology (UDP
-counters stay 0, Peer answers egress_off) and the a4_local fake-UDP hook -> exact P8
-relay_path_required line within 2 s, `not retrying`, no redial.
+Then scripts/a44_pilot_e2e.py: real Control + relay + Gateway + Peer on the A4.2/A4.3 relay-only
+netns topology with the TLS stand-in: TLS 1.3 GET 38 B + 300 KB (sha ok) over the DATA pump,
+UDP counters 0, 3rd stream refused, flag off closes <= 5 s, restart keeps the budget, and the
+a4_local fake-UDP hook -> exact P8 relay_path_required line <= 2 s, `not retrying`, no redial.
 
 `sudo -n` only for netns setup/exec. If cargo or sudo -n is unavailable: SKIP +
 exit 0, unless SPIKE_IMPL=rust or SPIKE_A4=1 (then FAIL). Prints
-A4.4_PEER_EGRESS_PART1_GREEN.
+A4.4_PEER_EGRESS_GREEN.
 """
 import json
 import os
@@ -190,16 +191,15 @@ def main():
         print(r.stdout, end="", flush=True)
         if r.returncode != 0 or "A44_RESTART_OK" not in r.stdout:
             fail("restart case failed:\n" + (r.stdout + r.stderr)[-2000:])
-        # Relay-path watcher e2e on the A4.2 topology (own a42-* netns; real relay-only dial).
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "a44_relay_path_e2e.py")],
+        # Full pilot e2e on the A4.2/A4.3 topology (a42-* + a43-site netns; real relay-only dial).
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "a44_pilot_e2e.py")],
                            capture_output=True, text=True, timeout=1800)
         for l in r.stdout.splitlines():
             if l.startswith(("OK ", "FAIL", "A44_")):
                 print("  " + l, flush=True)
-        if r.returncode != 0 or "A44_RELAY_PATH_OK" not in r.stdout:
-            fail("relay-path e2e failed:\n" + (r.stdout + r.stderr)[-3000:])
-        # Marker stays PART1 until A4.3 (Control egress flag + frames) lands.
-        print("A4.4_PEER_EGRESS_PART1_GREEN", flush=True)
+        if r.returncode != 0 or "A44_PILOT_E2E_OK" not in r.stdout:
+            fail("pilot e2e failed:\n" + (r.stdout + r.stderr)[-3000:])
+        print("A4.4_PEER_EGRESS_GREEN", flush=True)
     finally:
         subprocess.run(["sudo", "-n", "ip", "netns", "del", ns], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)

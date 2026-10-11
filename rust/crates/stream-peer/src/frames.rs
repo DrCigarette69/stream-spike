@@ -138,6 +138,35 @@ pub(crate) async fn read_line<R: AsyncRead + Unpin>(
 }
 
 
+/// Cancel-safe NDJSON line reader: partial bytes stay in `buf` when a `select!`
+/// branch wins (tokio `read_until` keeps them), so large DATA lines never tear.
+pub(crate) struct LineReader<R> {
+    r: BufReader<R>,
+    buf: Vec<u8>,
+}
+
+pub(crate) const MAX_LINE: usize = 1 << 20;
+
+impl<R: AsyncRead + Unpin> LineReader<R> {
+    pub(crate) fn new(r: BufReader<R>) -> Self {
+        Self { r, buf: Vec::new() }
+    }
+
+    pub(crate) async fn next_line(&mut self) -> Result<Option<String>, String> {
+        use tokio::io::AsyncBufReadExt;
+        let n = self.r.read_until(b'\n', &mut self.buf).await.map_err(|e| e.to_string())?;
+        if n == 0 && self.buf.is_empty() {
+            return Ok(None);
+        }
+        if self.buf.len() > MAX_LINE {
+            return Err("line_too_long".into());
+        }
+        let raw = std::mem::take(&mut self.buf);
+        let s = String::from_utf8(raw).map_err(|_| "line_not_utf8".to_string())?;
+        Ok(Some(s.trim_end_matches(['\r', '\n']).to_string()))
+    }
+}
+
 pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
     state: &SharedState,
     http: &reqwest::Client,
@@ -163,6 +192,12 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
                     // OPEN without a checked AUTH_TICKET never dials in pilot mode.
                     p.lock().unwrap().queue_close(sid, "egress_not_allowlisted");
                 }
+            }
+        }
+        "DATA" => {
+            let plane = state.read().await.egress.clone();
+            if let Some(p) = plane {
+                crate::pilot_data::on_gateway_data(&p, msg).await;
             }
         }
         "EGRESS_STATE" => {

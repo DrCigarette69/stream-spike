@@ -13,8 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use stream_proto::guard::{
     check_egress_budget, resolve_and_pin, EgressAllow, EgressSwitch, GuardError, Lane, Resolver,
-    StdResolver, REASON_EGRESS_BUDGET_EXCEEDED, REASON_EGRESS_OFF,
+    StdResolver, REASON_EGRESS_OFF,
 };
+#[cfg(test)]
+use stream_proto::guard::REASON_EGRESS_BUDGET_EXCEEDED;
+#[cfg(test)]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
@@ -90,6 +93,10 @@ pub struct EgressPlane {
     pub unreadable: Option<&'static str>,
     /// UTC day source (days since epoch); tests inject.
     pub day_fn: fn() -> u64,
+    /// A4.4 DATA pump: frames to the Gateway (set per pilot session).
+    pub outbound: Option<crate::pilot_data::Outbound>,
+    /// Gateway->site byte queues per open stream.
+    pub site_tx: HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for EgressPlane {
@@ -127,6 +134,8 @@ impl EgressPlane {
             last_save: Instant::now(),
             unreadable: None,
             day_fn: utc_day,
+            outbound: None,
+            site_tx: HashMap::new(),
         }
     }
 
@@ -291,6 +300,7 @@ impl EgressPlane {
     /// Gateway CLOSE / per-stream end: drop one connection, no CLOSE echoed.
     pub fn close_one(&mut self, sid: &str, reason: &'static str) {
         self.reserved.remove(sid);
+        self.site_tx.remove(sid);
         if let Some(c) = self.conns.remove(sid) {
             let _ = c.kill.send(Some(reason));
         }
@@ -370,6 +380,8 @@ pub async fn connect_pinned(
 
 /// Copy both ways between the pinned upstream and `down`, counting every byte
 /// against the cap. Ends on EOF, a plane-wide close, or the cap.
+/// Local-socket variant (unit + a44 stand-in tests); pilot sessions use `pilot_data::pump_frames`.
+#[cfg(test)]
 pub async fn pump<D: AsyncRead + AsyncWrite + Unpin>(
     plane: &SharedPlane,
     sid: &str,
@@ -406,22 +418,7 @@ pub async fn pump<D: AsyncRead + AsyncWrite + Unpin>(
     end
 }
 
-/// Part 1 OPEN (frames carry byte counts, not data yet): connect to the pinned
-/// address and hold it, counting upstream bytes, until closed. Part 2 replaces
-/// the local sink with the Gateway data path.
+/// OPEN in pilot mode: the A4.4 DATA pump (`pilot_data`).
 pub fn spawn_open(plane: SharedPlane, sid: String, host: String, port: u16, addr: SocketAddr) {
-    tokio::spawn(async move {
-        match connect_pinned(&plane, &sid, &host, port, addr).await {
-            Ok((up, rx)) => {
-                let (down, mut sink) = tokio::io::duplex(64 * 1024);
-                let drain = tokio::spawn(async move {
-                    let mut buf = [0u8; 8192];
-                    while matches!(sink.read(&mut buf).await, Ok(n) if n > 0) {}
-                });
-                let _ = pump(&plane, &sid, up, down, rx).await;
-                drain.abort();
-            }
-            Err(r) => plane.lock().unwrap().queue_close(&sid, &r.reason),
-        }
-    });
+    crate::pilot_data::spawn_open(plane, sid, host, port, addr)
 }

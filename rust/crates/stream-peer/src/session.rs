@@ -118,6 +118,13 @@ where
         *g = Some(close_tx);
     }
 
+    // A4.4: pilot DATA/CLOSE frames from the egress tasks, written in order here.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Value>(64);
+    let plane = state.read().await.egress.clone();
+    if let Some(p) = &plane {
+        p.lock().unwrap().outbound = Some(out_tx.clone());
+    }
+    let mut lines = crate::frames::LineReader::new(reader);
     let mut last_hb = Instant::now() - Duration::from_secs(3600);
     let hb = Duration::from_secs_f64(heartbeat_s.max(0.5));
     let mut end = SessionEnd::Ended;
@@ -167,14 +174,33 @@ where
             last_hb = Instant::now();
         }
 
-        let line = match tokio::time::timeout(Duration::from_millis(200), read_line(&mut reader)).await {
-            Ok(Ok(Some(l))) => l,
-            Ok(Ok(None)) => break,
-            Ok(Err(e)) => {
-                set_error(state, &e).await;
-                break;
+        let line = tokio::select! {
+            r = lines.next_line() => match r {
+                Ok(Some(l)) => l,
+                Ok(None) => break,
+                Err(e) => {
+                    set_error(state, &e).await;
+                    break;
+                }
+            },
+            Some(f) = out_rx.recv() => {
+                if send_line(&mut writer, &f).await.is_err() {
+                    break;
+                }
+                // Drain whatever else is queued (bulk DATA) before the next read.
+                let mut gone = false;
+                while let Ok(f) = out_rx.try_recv() {
+                    if send_line(&mut writer, &f).await.is_err() {
+                        gone = true;
+                        break;
+                    }
+                }
+                if gone {
+                    break;
+                }
+                continue;
             }
-            Err(_) => continue,
+            _ = tokio::time::sleep(Duration::from_millis(200)) => continue,
         };
         if line.is_empty() {
             break;
@@ -199,6 +225,14 @@ where
         let mut g = handle.close_tx.lock().await;
         *g = None;
     }
+    if let Some(p) = &plane {
+        // Session gone: its streams cannot reach the Gateway any more.
+        let mut p = p.lock().unwrap();
+        p.outbound = None;
+        p.close_all("connection_lost");
+        let _ = p.take_pending_close();
+    }
+    drop(out_tx);
     drop(writer);
     end
 }

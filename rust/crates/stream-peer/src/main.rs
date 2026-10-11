@@ -17,6 +17,7 @@ mod iroh_ticket;
 mod kill;
 mod offline;
 mod pilot_egress;
+mod pilot_data;
 mod pilot_target;
 mod relay_path;
 #[cfg(test)]
