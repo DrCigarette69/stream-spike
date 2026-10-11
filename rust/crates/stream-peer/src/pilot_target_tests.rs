@@ -86,8 +86,9 @@ async fn mock_watcher_direct_path_closes_all_and_p8() {
     let _rx = p.lock().unwrap().register("s1", "site1.pilot.example:443".into());
     let mut seq = vec![PathKind::None, PathKind::Relay, PathKind::Relay, PathKind::Direct("203.0.113.5:4433".into())].into_iter();
     let t0 = tokio::time::Instant::now();
-    let v = watch_path(&st, &slot, move || seq.next().unwrap_or(PathKind::Relay), std::future::pending()).await;
-    assert_eq!(v.as_deref(), Some("203.0.113.5:4433"));
+    let udp0 = crate::relay_path::FakeUdp::new(0);
+    let v = watch_path(&st, &slot, move || seq.next().unwrap_or(PathKind::Relay), &udp0, std::future::pending()).await;
+    assert_eq!(v.as_deref(), Some("direct_path:203.0.113.5:4433"));
     assert!(t0.elapsed() < std::time::Duration::from_secs(2), "kill <= 2 s");
     assert!(closed.load(Ordering::SeqCst), "transport closed");
     assert_eq!(p.lock().unwrap().open_streams(), 0);
@@ -96,7 +97,7 @@ async fn mock_watcher_direct_path_closes_all_and_p8() {
     assert!(crate::a4_copy::p8_reason_line("relay_path_required").unwrap().contains("expected secure route"));
     // Relay-only all along: watcher just stops.
     let st2 = pilot_state(&p);
-    let v = watch_path(&st2, &slot, || PathKind::Relay, tokio::time::sleep(std::time::Duration::from_millis(300))).await;
+    let v = watch_path(&st2, &slot, || PathKind::Relay, &udp0, tokio::time::sleep(std::time::Duration::from_millis(300))).await;
     assert_eq!(v, None);
     assert_eq!(st2.read().await.p8_reason, None);
 }

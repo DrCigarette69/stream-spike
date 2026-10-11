@@ -112,25 +112,36 @@ pub enum PathKind {
     None,
 }
 
-/// Poll `get` every `WATCH_INTERVAL` until a direct path shows up; then close
-/// all pilot egress, kill the transport (<= 2 s), log
-/// `a4_refuse_relay_refused:direct_path:<addr>` and show P8 `relay_path_required`.
-/// Returns the offending address. Runs until `stop` resolves otherwise.
-pub async fn watch_path<G, S>(state: &SharedState, slot: &TransportSlot, mut get: G, stop: S) -> Option<String>
+/// Poll every `WATCH_INTERVAL` until the path leaves the relay: primary = any non-zero
+/// UDP datagram count from `udp` (send+recv, v4+v6); secondary = `get` reporting a
+/// Direct / Mixed `conn_type`. Then close all pilot egress, kill the transport (<= 2 s),
+/// log `a4_refuse_relay_refused:<detail>` and show P8 `relay_path_required` once.
+/// Returns the detail. Runs until `stop` resolves otherwise (then `None`).
+pub async fn watch_path<G, S>(
+    state: &SharedState,
+    slot: &TransportSlot,
+    mut get: G,
+    udp: &dyn crate::relay_path::UdpCounterSource,
+    stop: S,
+) -> Option<String>
 where
     G: FnMut() -> PathKind,
     S: Future<Output = ()>,
 {
     tokio::pin!(stop);
     loop {
-        if let PathKind::Direct(addr) = get() {
-            eprintln!("a4_refuse_{}:direct_path:{addr}", guard::REASON_RELAY_REFUSED);
+        let hit = crate::relay_path::udp_violation(udp).or_else(|| match get() {
+            PathKind::Direct(addr) => Some(format!("direct_path:{addr}")),
+            _ => None,
+        });
+        if let Some(detail) = hit {
+            eprintln!("a4_refuse_{}:{detail}", guard::REASON_RELAY_REFUSED);
             if let Some(p) = state.read().await.egress.clone() {
                 p.lock().unwrap().close_all(RELAY_PATH_REQUIRED);
             }
             let _ = slot.kill(RELAY_PATH_REQUIRED).await;
             crate::offline::system_offline(state, RELAY_PATH_REQUIRED).await;
-            return Some(addr);
+            return Some(detail);
         }
         tokio::select! {
             _ = &mut stop => return None,

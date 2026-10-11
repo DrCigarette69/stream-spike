@@ -168,7 +168,7 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
         "EGRESS_STATE" => {
             let plane = state.read().await.egress.clone();
             if let Some(p) = plane {
-                crate::egress_state::apply_state(&p, msg);
+                crate::egress_state::apply_frame(&p, msg);
             }
         }
         "BYTES" => {
@@ -211,7 +211,13 @@ pub(crate) async fn handle_tunnel_msg<W: AsyncWrite + Unpin>(
                     p.lock().unwrap().close_one(&sid, "gateway");
                 }
             }
+            // A4.3: optional reason / detail (e.g. egress_off + flag_off); old shape still fine.
+            let why = msg.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            let detail = msg.get("detail").and_then(|v| v.as_str()).unwrap_or("");
             eprintln!("peer teardown stream {sid} (gateway CLOSE)");
+            if !why.is_empty() {
+                eprintln!("peer gateway_close {sid} reason={why} detail={detail}");
+            }
         }
         "ERR" => {
             set_error(state, &msg.to_string()).await;

@@ -14,6 +14,9 @@ the closed stream flushes the persistent byte counter. Then the real
 `stream-peer` binary (iroh_pilot) is started twice on that counter file
 (SIGTERM in between): bytes_today survives the restart; a corrupt file ->
 `a4_refuse_egress_budget:state_corrupt` + budget_state reported.
+Then scripts/a44_relay_path_e2e.py: real relay-only dial on the A4.2 netns topology (UDP
+counters stay 0, Peer answers egress_off) and the a4_local fake-UDP hook -> exact P8
+relay_path_required line within 2 s, `not retrying`, no redial.
 
 `sudo -n` only for netns setup/exec. If cargo or sudo -n is unavailable: SKIP +
 exit 0, unless SPIKE_IMPL=rust or SPIKE_A4=1 (then FAIL). Prints
@@ -119,6 +122,19 @@ def inner_restart(peer_bin: str, budget: str) -> None:
     if open(budget).read() != "{corrupt":
         fail("corrupt budget file overwritten on the same day")
     print("  corrupt budget -> a4_refuse_egress_budget:state_corrupt (fail closed, file kept)", flush=True)
+    # A4.1 amendment: allowlist load failures refuse startup (exit 2, log line) and never reach P8.
+    for bad, want in (("a.pilot.example:443=10.0.0.5", "a4_refuse_egress_allowlist_config:"),
+                      ("10-0-0-5.sslip.io:443", "a4_refuse_egress_allowlist_config:"),
+                      ("relay.93.184.216.34.sslip.io:443=93.184.216.35", "a4_refuse_egress_pin_mismatch:"),
+                      ("a.pilot.example:443=93.184.216.34,a.pilot.example:443=93.184.216.35",
+                       "a4_refuse_egress_pin_mismatch:")):
+        e2 = dict(env, SPIKE_EGRESS_ALLOWLIST=bad)
+        pr = subprocess.run([peer_bin], env=e2, capture_output=True, text=True, timeout=20)
+        err = pr.stdout + pr.stderr
+        if pr.returncode != 2 or want not in err or "UX P8" in err or "offline_reason" in err:
+            fail(f"bad allowlist {bad!r}: rc={pr.returncode} {err[-500:]}")
+        line = next(l for l in err.splitlines() if want in l)
+        print(f"  allowlist {bad!r} -> exit 2 :: {line.strip()} (no P8)", flush=True)
     print("A44_RESTART_OK", flush=True)
 
 
@@ -160,11 +176,29 @@ def main():
                 print("  " + l, flush=True)
         if r.returncode != 0 or "A44_NETNS_STAND_IN_OK" not in out or "1 passed" not in out:
             fail("stand-in test failed:\n" + out[-3000:])
+        r = subprocess.run(
+            nx + ["sudo", "-n", "-u", user, "env", f"SPIKE_A44_SITE={SITE}", exe,
+                  "pilot_pin_tests::a44_netns_pinned", "--ignored", "--exact", "--nocapture"],
+            capture_output=True, text=True, timeout=120,
+        )
+        out = r.stdout + r.stderr
+        if r.returncode != 0 or "A44_PINNED_OK" not in out:
+            fail("pinned stand-in test failed:\n" + out[-3000:])
+        print("  " + next(l for l in out.splitlines() if "A44_PINNED_OK" in l), flush=True)
         r = subprocess.run(nx + ["sudo", "-n", "-u", user, sys.executable, os.path.abspath(__file__),
                                  "--inner-restart", peer_bin, budget], capture_output=True, text=True, timeout=120)
         print(r.stdout, end="", flush=True)
         if r.returncode != 0 or "A44_RESTART_OK" not in r.stdout:
             fail("restart case failed:\n" + (r.stdout + r.stderr)[-2000:])
+        # Relay-path watcher e2e on the A4.2 topology (own a42-* netns; real relay-only dial).
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "a44_relay_path_e2e.py")],
+                           capture_output=True, text=True, timeout=1800)
+        for l in r.stdout.splitlines():
+            if l.startswith(("OK ", "FAIL", "A44_")):
+                print("  " + l, flush=True)
+        if r.returncode != 0 or "A44_RELAY_PATH_OK" not in r.stdout:
+            fail("relay-path e2e failed:\n" + (r.stdout + r.stderr)[-3000:])
+        # Marker stays PART1 until A4.3 (Control egress flag + frames) lands.
         print("A4.4_PEER_EGRESS_PART1_GREEN", flush=True)
     finally:
         subprocess.run(["sudo", "-n", "ip", "netns", "del", ns], capture_output=True)

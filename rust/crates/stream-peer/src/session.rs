@@ -219,7 +219,7 @@ pub(crate) async fn flush_pilot_closes<W: AsyncWrite + Unpin>(
                 st.closed_by = Some(reason.clone());
             }
         }
-        send_line(writer, &json!({"type": "CLOSE", "stream_id": sid, "reason": reason})).await?;
+        send_line(writer, &crate::egress_state::close_frame(&sid, &reason)).await?;
     }
     Ok(())
 }

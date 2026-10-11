@@ -128,11 +128,12 @@ Startup (exit 2 before anything binds): `peer a4_refuse_transport_not_pilot:<t>`
 `SPIKE_RELAY_ALLOW_URL` is exactly one acceptable relay (n0/community hosts, local names,
 non-public IPs, `http` outside a4_local, lists all refused by `RelayAllow::parse`).
 
-Endpoint (`iroh_pilot_dial.rs`): `RelayMode::Custom(RelayMap::from(<our relay>))`,
+Endpoint (`iroh_pilot_dial.rs`): `RelayMode::Custom(RelayMap::from(RelayConfig { url: <our relay>, quic: None }))`
+(QUIC address discovery off),
 `clear_discovery()`, `PathSelection::RelayOnly`, Peer key, guarded private binds
 (`SPIKE_IROH_BIND`, default 127.0.0.1:0). Relay TLS is always verified; a unit test fails if
 the skip-verify builder option appears anywhere in `stream-peer/src`.
-`peer iroh_pilot bound [..] relay=<url> path=relay_only discovery=off`.
+`peer iroh_pilot bound [..] relay=<url> path=relay_only discovery=off quic=none`.
 
 Dial target: `SPIKE_GATEWAY_ENDPOINT_ID` must match; relay = `SPIKE_IROH_GATEWAY_RELAY_URL`
 (default: the allowed URL) checked with `check_relay_url_with` (else `relay_refused`);
@@ -142,16 +143,49 @@ are never dialed. Dial = `EndpointAddr(gateway).with_relay_url(relay)` after
 AUTH_TICKET (pilot): ticket `relay_url` (top level or `payload`) must be our relay
 (`relay_refused`), empty `direct_addrs` needs one (`relay_required`); per-OPEN reject only.
 
-Direct-path watcher: polls `conn_type(gateway)` every 100 ms; `Direct`/`Mixed` -> close all
-pilot egress (CLOSE reason `relay_path_required`), kill the transport via the slot (<= 2 s),
-`a4_refuse_relay_refused:direct_path:<udp addr>`, P8 `relay_path_required`, no auto-retry.
+Relay-path watcher (`relay_path.rs` + `pilot_target::watch_path`, every 100 ms): primary =
+ANY non-zero endpoint UDP datagram count (send+recv, v4+v6; trait `UdpCounterSource`), secondary
+= `conn_type` Direct/Mixed (iroh 0.95.1 keeps it `None` under RelayOnly). Trip -> close all pilot
+egress (CLOSE reason `relay_path_required`), kill the transport via the slot (<= 2 s),
+`a4_refuse_relay_refused:udp_datagrams:<n> (...)` or `:direct_path:<addr>`, P8
+`relay_path_required` once, `left relay path: closed, not retrying`, no redial.
+Logs: `peer iroh_pilot udp_counters ...` after bind, `path ...` at connect, `session_end ...`.
+**Counter source gap:** iroh 0.95.1 only exposes the magicsock counters via `Endpoint::metrics()`
+(iroh feature `metrics`); stream-peer's `iroh_pilot` feature does not turn it on (Gateway's does),
+so the Peer reports `udp_counters=unavailable`. Pilot lane then fails closed after bind
+(`a4_refuse_relay_refused:udp_counters_unavailable`, P8 `relay_path_required`, no dial); a4_local
+lanes go on with conn_type only. Fix (Platform, Cargo.toml only, no lock change):
+`iroh_pilot = ["iroh_local", "iroh/test-utils", "iroh/metrics"]`, then `udp_source()` reads
+`send_ipv4+send_ipv6` / `recv_data_ipv4+recv_data_ipv6` (doc comment in `iroh_pilot_dial.rs`).
+On-box hook (a4_local builds only; the name is not in pilot binaries):
+`SPIKE_A4_FAKE_UDP_DATAGRAMS=<n>` adds n to the counters.
 Gateway `AUTH_REJECT` / `endpoint_mismatch` is terminal for iroh_pilot as for iroh_local.
 A pilot egress P8 (`egress_*`) is not replaced by a later generic `connection_lost`.
 
-E2E status: not yet. Gateway has no relay support and there is no self-hosted relay on
-main (A4.2), and no data frame (A4.3), so a44 stays at `A4.4_PEER_EGRESS_PART1_GREEN`.
-Manual a4_local run in a no-default-route netns: bound relay-only, P1->P2->P9 printed, dial
-times out (relay unreachable), P8 egress_off, kill -> P4.
+E2E (`scripts/a44_relay_path_e2e.py`, run by a44; A4.2 topology via `a42_netns_up.sh`, relay
+`http://10.73.0.254:3340/`, Peer .200): real relay-only connect, Gateway UDP counters 0 at
+connect / after ticket / after 3 s, Control relay ticket -> Peer `egress_off` (kill switch off
+until A4.3); hook=1 -> exact P8 line within 2 s, `not retrying`, one connect only.
+a44 marker stays `A4.4_PEER_EGRESS_PART1_GREEN` until A4.3 (Control egress flag + frames).
+
+## A4.1 amendment (pins) + A4.3 part 1 frames on the Peer
+
+Pins: `SPIKE_EGRESS_ALLOWLIST` entries `host:443=IP` and `*.sslip.io` hosts (embedded IPv4) are
+pinned by `EgressAllow::parse_for(.., Lane::build())`; `resolve_and_pin` returns the pin without
+calling the resolver, and the Peer connects to exactly that address (`pilot_pin_tests.rs`: a
+resolver that panics if called; a44 netns `a44_netns_pinned` -> TEST-NET-2 stand-in). The
+reported `allowlist_version` covers pins. Load failures (non-public pin / embedded IP ->
+`a4_refuse_egress_allowlist_config`, conflicting pins -> `a4_refuse_egress_pin_mismatch`) exit 2
+at startup before any state/admin exists, so they never reach P8 (a44 checks the real binary).
+The allowlist is never re-loaded at runtime; a Control-side load failure arrives as
+`public_egress:false` + version `""` -> P8 `egress_off` (flag off wins over the mismatch).
+
+Frames (Platform e20498d): `EGRESS_STATE` is parsed as `stream_proto::relay::EgressState`
+(type/public_egress/allowlist_version/ts required; malformed ignored -> stale -> off; `ts` is not
+age-checked, freshness is time of receipt). Peer CLOSE = `relay::Close::with_reason` (`reason`,
+no `detail`); Gateway CLOSE `reason`/`detail` are logged. **Not yet:** `DATA` frames are ignored
+(the A4.4 part 1 local sink still drains site bytes); wiring `DATA` <-> pinned socket is the Peer
+half of A4.3.
 
 ## Open / asks
 - Kill-switch reason is `egress_off` everywhere (guard, fixture `reason_lines`, Peer).

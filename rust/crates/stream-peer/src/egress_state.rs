@@ -68,6 +68,23 @@ pub fn apply_state(plane: &SharedPlane, v: &Value) -> bool {
     true
 }
 
+/// Gateway `EGRESS_STATE` frame, typed as A4.3's `stream_proto::relay::EgressState`
+/// (`type`, `public_egress`, `allowlist_version`, `ts` all required). Malformed -> ignored.
+pub fn apply_frame(plane: &SharedPlane, msg: &Value) -> bool {
+    match serde_json::from_value::<stream_proto::relay::EgressState>(msg.clone()) {
+        Ok(f) if f.type_ == "EGRESS_STATE" => {
+            plane.lock().unwrap().update_state(f.public_egress, &f.allowlist_version);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Peer -> Gateway CLOSE in A4.3 shape (`reason`, optional `detail`).
+pub fn close_frame(sid: &str, reason: &str) -> Value {
+    serde_json::to_value(stream_proto::relay::Close::with_reason(sid, reason, None)).unwrap_or(Value::Null)
+}
+
 pub fn snapshot(plane: &SharedPlane) -> Value {
     let mut p = plane.lock().unwrap();
     let status = p.status();

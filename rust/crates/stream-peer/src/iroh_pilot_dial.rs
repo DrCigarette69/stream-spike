@@ -14,11 +14,12 @@ use crate::iroh_key;
 use crate::iroh_local::pre_dial_a4;
 use crate::kill::TransportSlot;
 use crate::offline::{self, CONNECTION_LOST};
+use crate::relay_path::{counters_line, require_counters, retry_after, with_test_hook, UdpCounterSource};
 use crate::pilot_target::{check_pilot_target, env_payload, watch_path, PathKind, PilotTarget, RELAY_PATH_REQUIRED};
 use crate::session::{self, SessionEnd};
 use crate::state::{RelayHandle, SharedState};
 use iroh::endpoint::{Connection, ConnectionType, PathSelection, VarInt};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, Watcher};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, Watcher};
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
 use stream_proto::guard::{self, RelayAllow};
@@ -30,9 +31,15 @@ pub fn relay_url_of(allow: &RelayAllow) -> Result<RelayUrl, String> {
     RelayUrl::from_str(&allow.url()).map_err(|_| guard::REASON_RELAY_CONFIG.to_string())
 }
 
-/// The only builder the pilot Peer uses: one relay, no discovery, RelayOnly.
+/// Our one relay, QUIC address discovery off (`quic: None`): relay-only never needs a
+/// public UDP address, so the endpoint has no reason to send a single UDP datagram.
+pub fn pilot_relay_map(relay: RelayUrl) -> RelayMap {
+    RelayMap::from(RelayConfig { url: relay, quic: None })
+}
+
+/// The only builder the pilot Peer uses: one relay (no QAD), no discovery, RelayOnly.
 pub fn pilot_builder(secret: SecretKey, relay: RelayUrl, v4: SocketAddrV4, v6: SocketAddrV6) -> iroh::endpoint::Builder {
-    Endpoint::empty_builder(RelayMode::Custom(RelayMap::from(relay)))
+    Endpoint::empty_builder(RelayMode::Custom(pilot_relay_map(relay)))
         .clear_discovery()
         .path_selection(PathSelection::RelayOnly)
         .secret_key(secret)
@@ -63,6 +70,15 @@ pub fn path_kind(ct: &ConnectionType) -> PathKind {
         ConnectionType::Direct(a) | ConnectionType::Mixed(a, _) => PathKind::Direct(a.to_string()),
         ConnectionType::None => PathKind::None,
     }
+}
+
+/// Endpoint UDP datagram counters. iroh 0.95.1 exposes them only through
+/// `Endpoint::metrics()` (iroh cargo feature `metrics`), which stream-peer's `iroh_pilot`
+/// feature does not enable yet; until it does this reports `Unavailable` and the pilot lane
+/// refuses to dial (`require_counters`). With `iroh/metrics` on, the source is:
+/// `m = ep.metrics().magicsock`: send = `send_ipv4 + send_ipv6`, recv = `recv_data_ipv4 + recv_data_ipv6`.
+pub fn udp_source(_ep: &Endpoint) -> Box<dyn UdpCounterSource> {
+    with_test_hook(Box::new(crate::relay_path::Unavailable))
 }
 
 pub async fn connect(ep: &Endpoint, t: &PilotTarget) -> Result<Connection, String> {
@@ -107,8 +123,16 @@ pub async fn run(state: SharedState, slot: TransportSlot, http: reqwest::Client,
         Ok(ep) => ep,
         Err(e) => return refuse(&state, &e).await,
     };
-    eprintln!("peer iroh_pilot bound {:?} relay={} path=relay_only discovery=off", ep.bound_sockets(), target.relay_url);
-    dial_loop(&state, &slot, &http, &handle, &ep, &target).await;
+    eprintln!("peer iroh_pilot bound {:?} relay={} path=relay_only discovery=off quic=none", ep.bound_sockets(), target.relay_url);
+    let udp = udp_source(&ep);
+    eprintln!("peer iroh_pilot {}", counters_line(udp.as_ref()));
+    if let Err(e) = require_counters(udp.as_ref(), guard::Lane::build()) {
+        ep.close().await;
+        refuse(&state, &e).await;
+        offline::system_offline(&state, RELAY_PATH_REQUIRED).await;
+        return;
+    }
+    dial_loop(&state, &slot, &http, &handle, &ep, &target, udp.as_ref()).await;
     ep.close().await;
 }
 
@@ -120,6 +144,7 @@ pub async fn dial_loop(
     handle: &RelayHandle,
     ep: &Endpoint,
     target: &PilotTarget,
+    udp: &dyn UdpCounterSource,
 ) -> Option<String> {
     let gw_id = EndpointId::from_str(&target.gateway_endpoint_id).ok()?;
     loop {
@@ -154,11 +179,12 @@ pub async fn dial_loop(
             }
         };
         eprintln!("peer iroh_pilot connected gateway={} alpn={ALPN} via={}", conn.remote_id(), target.relay_url);
+        eprintln!("peer iroh_pilot path {}", counters_line(udp));
         slot.set(Box::new(IrohConn(conn.clone()))).await;
         let mut ct = ep.conn_type(gw_id);
         let get = move || ct.as_mut().map(|w| path_kind(&w.get())).unwrap_or(PathKind::None);
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let watcher = watch_path(state, slot, get, async move {
+        let watcher = watch_path(state, slot, get, udp, async move {
             let _ = stop_rx.await;
         });
         let session = session::run(state, handle, http, recv, send);
@@ -177,9 +203,11 @@ pub async fn dial_loop(
                 }
             }
         };
+        eprintln!("peer iroh_pilot session_end {}", counters_line(udp));
         let _ = slot.kill("session_end").await;
         conn.close(VarInt::from_u32(0), b"session_end");
         mark_offline(state).await;
+        debug_assert_eq!(retry_after(end.as_deref()), end.is_none());
         match end {
             Some(why) if why == RELAY_PATH_REQUIRED => {
                 eprintln!("peer iroh_pilot left relay path: closed, not retrying");

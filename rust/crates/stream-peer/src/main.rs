@@ -18,12 +18,17 @@ mod kill;
 mod offline;
 mod pilot_egress;
 mod pilot_target;
+mod relay_path;
 #[cfg(test)]
 mod pilot_target_tests;
 #[cfg(feature = "iroh_pilot")]
 mod iroh_pilot_dial;
 #[cfg(test)]
 mod pilot_egress_tests;
+#[cfg(test)]
+mod pilot_pin_tests;
+#[cfg(test)]
+mod a43_frames_tests;
 #[cfg(test)]
 mod egress_budget_tests;
 mod relay;

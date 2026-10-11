@@ -16,9 +16,10 @@ fn relay_url_is_the_single_allowed_one() {
     assert!(u.as_str().starts_with("https://relay.pilot.example"), "{u}");
     guard::check_relay_url_with(Some(u.as_str()), Some(&a)).unwrap();
     assert!(guard::check_relay_url_with(Some("https://relay.pilot.example:8443/"), Some(&a)).is_err());
-    let map = RelayMap::from(u.clone());
+    let map = pilot_relay_map(u.clone());
     let urls: Vec<RelayUrl> = map.urls();
-    assert_eq!(urls, vec![u], "exactly one relay in the map");
+    assert_eq!(urls, vec![u.clone()], "exactly one relay in the map");
+    assert!(map.get(&u).unwrap().quic.is_none(), "QUIC address discovery off (quic: None)");
 }
 
 #[tokio::test]
@@ -45,4 +46,18 @@ fn conn_type_mapping() {
     assert_eq!(path_kind(&ConnectionType::None), PathKind::None);
     assert_eq!(path_kind(&ConnectionType::Direct(a)), PathKind::Direct(a.to_string()));
     assert_eq!(path_kind(&ConnectionType::Mixed(a, r)), PathKind::Direct(a.to_string()));
+}
+
+#[tokio::test]
+async fn pilot_udp_source_is_unavailable_without_iroh_metrics() {
+    let a = allow("http://10.73.0.254:3340/", Lane::Local);
+    let ep = bind_pilot(SecretKey::from_bytes(&[9u8; 32]), &a, "127.0.0.1:0").await.unwrap();
+    let src = udp_source(&ep);
+    #[cfg(not(feature = "a4_local"))]
+    {
+        assert_eq!(src.read(), None);
+        assert!(require_counters(src.as_ref(), Lane::Pilot).is_err(), "pilot lane fails closed");
+    }
+    let _ = src;
+    ep.close().await;
 }
