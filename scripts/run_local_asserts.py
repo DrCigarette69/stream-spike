@@ -17,6 +17,61 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spike_ports  # noqa: E402  SPIKE_PORT_BASE + explicit-env-wins resolution
 CLI = ROOT / "client-cli" / "main.py"
 procs: list[subprocess.Popen] = []
+# Last output lines per stack child (stdout+stderr merged), drained by a thread so the pipe never fills.
+proc_tails: dict[int, "collections.deque[str]"] = {}
+
+DEFAULT_HEALTH_TIMEOUT_S = 30.0
+HEALTH_POLL_S = 0.2
+TAIL_LINES = 20
+
+
+def health_timeout_s():
+    """SPIKE_HEALTH_TIMEOUT_S (seconds, > 0); unset/invalid -> 30."""
+    try:
+        v = float(os.environ.get("SPIKE_HEALTH_TIMEOUT_S", "").strip())
+        return v if v > 0 else DEFAULT_HEALTH_TIMEOUT_S
+    except ValueError:
+        return DEFAULT_HEALTH_TIMEOUT_S
+
+
+def _drain(p):
+    import collections
+    import threading
+
+    tail = collections.deque(maxlen=200)
+    proc_tails[p.pid] = tail
+
+    def run():
+        for line in iter(p.stdout.readline, b""):
+            tail.append(line.decode("utf-8", "replace").rstrip("\n"))
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _proc_state(name, p, tail_lines=None):
+    """`name: exited rc=N` / `name: still running (pid N)` + last TAIL_LINES output lines."""
+    rc = p.poll()
+    state = f"{name}: exited rc={rc}" if rc is not None else f"{name}: still running (pid {p.pid})"
+    if rc is not None:
+        time.sleep(0.2)  # let the drain thread pick up the final lines
+    lines = list(tail_lines if tail_lines is not None else proc_tails.get(p.pid, ()))[-TAIL_LINES:]
+    body = "\n".join(f"  | {l}" for l in lines) if lines else "  | <no output>"
+    return f"{state}; last {len(lines)} output lines:\n{body}"
+
+
+def wait_health(url, p, name, timeout=None):
+    """Poll url every HEALTH_POLL_S until 200 or timeout (SPIKE_HEALTH_TIMEOUT_S, default 30 s).
+    Fails fast if the child exits. FAIL message has exit status + the child's last output lines."""
+    timeout = health_timeout_s() if timeout is None else timeout
+    deadline = time.monotonic() + timeout
+    while True:
+        if http_ok(url):
+            return
+        if p.poll() is not None or time.monotonic() >= deadline:
+            why = "process exited" if p.poll() is not None else f"no 200 within {timeout:g}s"
+            raise SystemExit(f"FAIL failed to start {url} ({why}; SPIKE_HEALTH_TIMEOUT_S={timeout:g})\n"
+                             + _proc_state(name, p))
+        time.sleep(HEALTH_POLL_S)
 
 
 def http_ok(url):
@@ -132,28 +187,26 @@ def start_stack():
     from spike_peer_launch import control_cmd, gateway_cmd, peer_cmd
 
     for argv, cwd in (control_cmd(env), gateway_cmd(env), peer_cmd(env)):
-        procs.append(
-            subprocess.Popen(
-                argv,
-                cwd=str(cwd),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
+        child = subprocess.Popen(
+            argv,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
+        procs.append(child)
+        _drain(child)
         time.sleep(0.4)
     control, gateway, peer = spike_ports.urls(env)
+    pc, pg, pp = procs[-3:]
     print(f"stack: control={control} gateway={gateway} peer={peer}", flush=True)
-    for url in (control + "/health", gateway + "/health", peer + "/health"):
-        for _ in range(50):
-            if http_ok(url):
-                break
-            time.sleep(0.1)
-        else:
-            raise SystemExit(f"failed to start {url}")
-    # wait peer online
-    import urllib.error
-    for _ in range(50):
+    for url, child, name in ((control + "/health", pc, "control"), (gateway + "/health", pg, "gateway"),
+                             (peer + "/health", pp, "peer")):
+        wait_health(url, child, name)
+    # wait peer online (same timeout)
+    timeout = health_timeout_s()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(gateway + "/gw/peers", timeout=2) as r:
                 peers = json.loads(r.read().decode()).get("peers", [])
@@ -161,8 +214,11 @@ def start_stack():
                     return env
         except Exception:
             pass
-        time.sleep(0.1)
-    raise SystemExit("peer not on gateway")
+        if pp.poll() is not None or pg.poll() is not None:
+            break
+        time.sleep(HEALTH_POLL_S)
+    raise SystemExit(f"FAIL peer not on gateway within {timeout:g}s (SPIKE_HEALTH_TIMEOUT_S)\n"
+                     + _proc_state("peer", pp) + "\n" + _proc_state("gateway", pg))
 
 
 def run_cli(env, cmd):
@@ -539,10 +595,15 @@ def _a3_ux_inner():
     err = open(tmp / "peer.stderr", "w+")
     p = subprocess.Popen([str(peer_bin)], env=env, stdout=err, stderr=subprocess.STDOUT)
     try:
-        for _ in range(100):
-            if http_ok("http://127.0.0.1:9200/health"):
-                break
-            time.sleep(0.1)
+        timeout = health_timeout_s()
+        deadline = time.monotonic() + timeout
+        while not http_ok("http://127.0.0.1:9200/health"):
+            if p.poll() is not None or time.monotonic() >= deadline:
+                err.flush()
+                err.seek(0)
+                raise SystemExit(f"FAIL a3 ux: iroh_local Peer /health not up within {timeout:g}s "
+                                 f"(SPIKE_HEALTH_TIMEOUT_S)\n" + _proc_state("peer", p, err.read().splitlines()))
+            time.sleep(HEALTH_POLL_S)
         with urllib.request.urlopen("http://127.0.0.1:9200/peer/consent/p2", timeout=5) as r:
             body = json.loads(r.read().decode())
         print("A3UX_P2_JSON=" + json.dumps(body), flush=True)

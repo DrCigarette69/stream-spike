@@ -103,6 +103,7 @@ refuses a non-loopback `SPIKE_IROH_LOOPBACK`. `compose_health.sh` (Docker) stays
 | `SPIKE_HOST_TIER` | `casual` / `always_on` |
 | `SPIKE_DENYLIST` | Path to `fixtures/denylist.seed.json` |
 | `FIXTURES` | Path to `fixtures/` for CLI copy asserts |
+| `SPIKE_HEALTH_TIMEOUT_S` | `run_local_asserts.py` stack / Peer health waits (default 30 s, polled every 0.2 s); a timeout or early exit FAILs with the child's exit status and last 20 output lines |
 
 
 ### Stripe credentials are scrubbed (hermetic runs)
