@@ -382,8 +382,9 @@ def _egress_allowlist():
         raw = os.environ.get("SPIKE_EGRESS_ALLOWLIST", "")
         try:
             g = _guard()
-            a = g.EgressAllow.parse(raw)
-            _egress["allowlist"] = (["%s:%d" % e for e in a.entries()], a.version(), None)
+            # Same lane as Gateway/Peer builds: SPIKE_A4_LANE=local accepts the 198.51.100.x stand-in pins.
+            a = g.EgressAllow.parse(raw, lane=_a4_lane(g))
+            _egress["allowlist"] = (a.canonical().splitlines(), a.version(), None)
         except ImportError:
             _egress["allowlist"] = ([], "", "guard_unavailable")
         except Exception as e:  # GuardError (egress_allowlist_config) incl. unset
@@ -604,10 +605,11 @@ class Handler(BaseHTTPRequestHandler):
                     raw = body["allowlist"]
                     raw = ",".join(raw) if isinstance(raw, list) else str(raw)
                     try:
-                        a = _guard().EgressAllow.parse(raw)
+                        g = _guard()
+                        a = g.EgressAllow.parse(raw, lane=_a4_lane(g))
                     except Exception as e:
                         return self._json(400, {"error": getattr(e, "reason", "egress_allowlist_config")})
-                    _egress["allowlist"] = (["%s:%d" % e for e in a.entries()], a.version(), None)
+                    _egress["allowlist"] = (a.canonical().splitlines(), a.version(), None)
                 _egress["public_egress"] = body["public_egress"]
                 _egress["updated_at"] = time.time()
                 st = _egress_state()
