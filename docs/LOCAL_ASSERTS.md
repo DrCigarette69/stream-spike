@@ -287,6 +287,21 @@ python3 scripts/spike_private_guard.py --pilot                             # Pyt
 - Reasons: `relay_config`, `relay_required`, `egress_allowlist_config`, `egress_not_allowlisted`, `egress_resolved_non_public`, `egress_resolve_failed`, `egress_off`, `egress_allowlist_mismatch`, `egress_budget_exceeded`, `transport_not_pilot`, `stripe_live_key_refused`. Log line `a4_refuse_<reason>:<detail>`.
 - Missing `cargo` → Rust half skipped with a message, unless `SPIKE_IMPL=rust` or `SPIKE_A4=1` (then `FAIL a41`). `a30` is unchanged (its `guard` filter now also runs the pilot tests).
 
+## Alpha-4 self-hosted relay (A4.2)
+
+Platform's smoke `scripts/a42_self_relay_smoke.py`, wrapped with the shared smoke helper. **Opt-in, not in `all`.** Needs `cargo` + `sudo -n`. Details: [`PLATFORM_RUNBOOK.md`](PLATFORM_RUNBOOK.md) (A4.2).
+
+```bash
+python3 scripts/run_local_asserts.py a42               # → A4.2_SELF_RELAY_GREEN (aliases: self-relay, self_relay)
+python3 scripts/a42_self_relay_smoke.py                # the smoke directly
+```
+
+- Builds `stream-gateway` / `stream-relay` / `stream-peer` (`iroh_pilot,a4_local`) into `rust/target/pilot` and an `iroh`-only Gateway into `rust/target/iroh`; the first run is slow.
+- Netns `a42-gw` (10.73.0.1) / `a42-relay` (10.73.0.254) / `a42-peer` (10.73.0.200) from `scripts/a42_netns_up.sh`, no default route, `ip_forward=0`: the relay is the only route between Gateway and Peer. Relay is dev http `http://10.73.0.254:3340/` (`a4_local` lane only; TLS mode refuses with `relay_tls_todo`). No internet.
+- Proves: no `insecure_skip_relay_cert_verify(` in the tree; Gateway refuses unset/n0/other allow URL, non-relay-only path, discovery and a non-pilot build; relay-only connect (UDP datagrams 0/0 on both ends); Control-minted ticket with `relay_url` + empty `direct_addrs` → AUTH_OK → OPEN; relay killed → live conn drops, new dial fails closed, Gateway start refused.
+- Single instance: holds `/tmp/stream-spike-a42.lock` and fails if another a42 run holds it.
+- Missing `cargo` / `sudo -n` → `SKIP a42 ...` (exit 0), unless `SPIKE_IMPL=rust`, `SPIKE_A3=1` or `SPIKE_A4=1` → `FAIL a42: ...` (exit 1).
+
 ## Alpha-4 Peer pilot egress (A4.4)
 
 Peer's smoke `scripts/a44_peer_egress_smoke.py`, wrapped with the shared smoke helper. **Opt-in, not in `all`.** Needs `cargo` + `sudo -n`.

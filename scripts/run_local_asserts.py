@@ -238,6 +238,15 @@ def run_a40_compose_guard():
                             needs=("sudo", "docker"), strict_env="SPIKE_A4")
 
 
+def run_a42_self_relay():
+    """A4.2 self-hosted relay smoke (Platform's scripts/a42_self_relay_smoke.py): a42-* netns, no
+    default route, relay at http://10.73.0.254:3340/ (dev http), real stream-peer iroh_pilot as the
+    Peer. Needs cargo + sudo -n; SKIP without them unless SPIKE_IMPL=rust / SPIKE_A3=1 / SPIKE_A4=1
+    (then FAIL). The smoke is single-instance (/tmp/stream-spike-a42.lock) and fails if it's held."""
+    return _run_netns_smoke("a42", "A4.2", "a42_self_relay_smoke", "A4.2_SELF_RELAY_GREEN",
+                            needs=("cargo", "sudo"), strict_env=("SPIKE_A3", "SPIKE_A4"))
+
+
 # A4.4: Peer ships the final marker with part 2; until then part 1 is accepted. Final listed first
 # so it wins when both are printed. To require the final marker, drop the PART1 entry.
 A44_MARKERS = ("A4.4_PEER_EGRESS_GREEN", "A4.4_PEER_EGRESS_PART1_GREEN")
@@ -565,6 +574,9 @@ def main():
         return 0
     if mode in ("a40", "compose-guard", "compose_guard"):
         run_a40_compose_guard()
+        return 0
+    if mode in ("a42", "self-relay", "self_relay"):
+        run_a42_self_relay()
         return 0
     if mode in ("a44", "peer-egress", "peer_egress"):
         run_a44_peer_egress()
