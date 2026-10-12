@@ -190,7 +190,7 @@ def main():
             fail(f"pilot binary UDP counter line = {udp[:1]} (want all four 0 from iroh metrics)")
         if "udp_counters_unavailable" in alll or "udp_counters=unavailable" in alll or "relay_path_required" in alll:
             fail("pilot binary reports udp_counters unavailable / relay_path_required:\n" + alll[-600:])
-        print(f"a45: iroh metrics on: '{udp[0].strip()}', no udp_counters_unavailable", flush=True)
+        print(f"a45: iroh metrics on: '{udp[0].strip()}', Peer counters present", flush=True)
         k = d("exec", NAME, "peer-admin", "POST", "/peer/kill", check=False)
         hk = json.loads(d("exec", NAME, "peer-admin", "GET", "/health").stdout)
         if k.returncode != 0 or not hk.get("kill_requested"):
