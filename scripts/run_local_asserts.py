@@ -778,6 +778,7 @@ def run_a3_iroh_local():
 import re as _re  # noqa: E402
 
 A44_FINAL_MARKER = "A4.4_PEER_EGRESS_GREEN"
+PEER_UDP_ZERO_LINE = "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0"
 INSECURE_CALL_RE = _re.compile(r"insecure_skip_relay_cert_verify\s*\(")
 
 # (smoke, needle, what it proves). Exact substrings of the smokes' own OK/log lines.
@@ -1060,10 +1061,11 @@ def a4_check_evidence(outs, pending):
             pending.append("peer udp_counters unavailable (iroh/metrics)")
             print(f"PENDING [{'/'.join(udp_tags)}] Peer logs udp_counters unavailable (stream-peer lacks "
                   "iroh/metrics); Gateway 0/0 is not enough", flush=True)
-        elif " total=0" not in peer_udp:
-            raise SystemExit("FAIL a4: no Peer-side `udp_counters total=0` line in a42/a43/a44/a45 output")
+        elif not outs.get("a44") or PEER_UDP_ZERO_LINE not in outs["a44"]:
+            raise SystemExit(f"FAIL a4: a44 output lacks the Peer-side `{PEER_UDP_ZERO_LINE}` line")
         else:
-            print(f"OK Peer UDP datagram counters total=0 under RelayOnly ({len(peer_udp)} lines)", flush=True)
+            print(f"OK [a44] Peer-side `{PEER_UDP_ZERO_LINE}` under RelayOnly "
+                  f"({len(peer_udp)} Peer counter lines in {'/'.join(udp_tags)}, all total=0)", flush=True)
     for tag, needle in A4_NOROUTE_GREPS:
         if outs.get(tag):
             if needle not in outs[tag]:
