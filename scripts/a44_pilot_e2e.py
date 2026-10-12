@@ -196,14 +196,14 @@ def body(tmp: Path):
                       "ticket_json": old["ticket_json"], "dest_host": "echo.example.com", "dest_port": 443})
     rej = pb.expect(MISMATCH_LINE, timeout=10)
     t_rej = time.time()
-    pb.expect("offline_reason=endpoint_mismatch", timeout=3)
+    off = pb.expect("offline_reason=endpoint_mismatch", timeout=3)
     G.drain(pb, max(0.0, 4.5 - (time.time() - t_rej)))
     conns = sum("iroh_pilot connected" in l for l in pb.lines)
     if conns != 1 or sum(MISMATCH_LINE in l for l in pb.lines) != 1 or st == 200:
         fail(f"endpoint_mismatch: /gw/start {st} {r}; connects={conns}; {pb.lines[-8:]}")
     peer_udp_zero(pb, "key-B Peer")
     ok(f"ticket for key A ({id_a[:12]}…) -> Peer on key B ({id_b[:12]}…): /gw/start {st} {r.get('error')}; "
-       f"'{rej.strip()}'; one connect, no redial in {time.time() - t_rej:.1f} s")
+       f"'{rej.strip()}'; '{off.strip()}'; one connect, no redial in {time.time() - t_rej:.1f} s")
     stop_peer(pb)
 
     # 5. fake UDP datagram -> trip once, no retry
