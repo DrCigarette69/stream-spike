@@ -437,6 +437,8 @@ def run_a41_pilot_guard():
     import shutil
 
     print("\n=== A4.1 pilot guard (rust stream-proto::guard::pilot) ===", flush=True)
+    out_parts: list[str] = []
+    rust_ran = False
     impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
     strict = impl == "rust" or os.environ.get("SPIKE_A4", "").strip() == "1"
     cargo = shutil.which("cargo")
@@ -448,10 +450,15 @@ def run_a41_pilot_guard():
         for extra in ([], ["--features", "a4_local"]):
             p = subprocess.run(
                 [cargo, "test", "-p", "stream-proto", "--locked", *extra, "guard::pilot"],
-                cwd=str(ROOT / "rust"), stdin=subprocess.DEVNULL,
+                cwd=str(ROOT / "rust"), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True,
             )
+            sys.stdout.write(p.stdout)
+            sys.stdout.flush()
+            out_parts.append(p.stdout)
             if p.returncode != 0:
                 raise SystemExit(f"FAIL a41 rust pilot guard tests {' '.join(extra)}".rstrip())
+        rust_ran = True
         print("PASS a41 rust pilot guard tests (default + a4_local)", flush=True)
 
     print("\n=== A4.1 pilot guard (python spike_private_guard --pilot) ===", flush=True)
@@ -462,8 +469,10 @@ def run_a41_pilot_guard():
     sys.stdout.write(p.stdout)
     if p.returncode != 0 or "A4.1_PY_PILOT_SELFTEST_OK" not in p.stdout.split():
         raise SystemExit("FAIL a41 python pilot self-test")
+    out_parts.append(p.stdout)
     print("PASS a41 python pilot self-test", flush=True)
     print("\nA4.1_PILOT_GUARD_GREEN", flush=True)
+    return ("pass" if rust_ran else "skip"), "".join(out_parts)
 
 
 def run_a31_gateway_endpoint():
@@ -521,6 +530,35 @@ def run_a34_multinode():
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+A45_SCRIPT = "a45_peer_package_smoke"
+A45_MARKER = "A4.5_PEER_PACKAGE_GREEN"
+
+
+def run_a45_peer_package():
+    """A4.5 Peer pilot package smoke (Peer's scripts/a45_peer_package_smoke.py, marker
+    A4.5_PEER_PACKAGE_GREEN). Returns ("pending", "") while the script isn't on main. Assumed to
+    need cargo + sudo + docker (pilot image); docker modes only use the local unix socket."""
+    if not (ROOT / "scripts" / f"{A45_SCRIPT}.py").exists():
+        print(f"\nPENDING a45 (scripts/{A45_SCRIPT}.py not on main)", flush=True)
+        return "pending", ""
+    return _run_netns_smoke("a45", "A4.5", A45_SCRIPT, A45_MARKER,
+                            needs=("cargo", "sudo", "docker"), strict_env="SPIKE_A4")
+
+
+def run_a47_copy_fixtures():
+    """A4.7 copy fixtures check (Designer's scripts/a47_copy_fixtures_smoke.py): Python only."""
+    print("\n=== a47_copy_fixtures_smoke (A4.7) ===", flush=True)
+    p = subprocess.run([sys.executable, "-u", str(ROOT / "scripts" / "a47_copy_fixtures_smoke.py")],
+                       cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    sys.stdout.write(p.stdout)
+    sys.stdout.flush()
+    if p.returncode != 0 or "A4.7_COPY_FIXTURES_GREEN" not in {l.strip() for l in p.stdout.splitlines()}:
+        raise SystemExit(f"FAIL a47_copy_fixtures_smoke (rc={p.returncode})")
+    print("PASS a47_copy_fixtures_smoke", flush=True)
+    return "pass", p.stdout
 
 
 # --------------------------------------------------------------------------- A3.5 (a3)
@@ -733,6 +771,486 @@ def run_a3_iroh_local():
     return 0
 
 
+# --------------------------------------------------------------------------- A4.8 (a4)
+# Roll-up: A4.0-A4.7 smokes in order + cross-cutting checks. Prints A4_PILOT_GREEN only if every
+# step passed with no skip/pending; otherwise A4_PILOT_NOT_GREEN pending: ... (exit 1 under
+# SPIKE_A4=1 / SPIKE_IMPL=rust, else 3). A failing check is FAIL (exit 1) immediately.
+import re as _re  # noqa: E402
+
+A44_FINAL_MARKER = "A4.4_PEER_EGRESS_GREEN"
+INSECURE_CALL_RE = _re.compile(r"insecure_skip_relay_cert_verify\s*\(")
+
+# (smoke, needle, what it proves). Exact substrings of the smokes' own OK/log lines.
+A4_REFUSAL_GREPS = (
+    # relay: ours only, n0/other refused, relay-only, no fallback (A4.2)
+    ("a42", "OK gateway: SPIKE_RELAY_ALLOW_URL unset refused", "Gateway refuses to start without our relay"),
+    ("a42", "OK gateway: n0 relay as SPIKE_RELAY_ALLOW_URL refused: rc=2 :: iroh_pilot refused: a4_refuse_relay_config:",
+     "n0 host as SPIKE_RELAY_ALLOW_URL -> relay_config (Gateway)"),
+    ("a42", "OK gateway: n0 relay URL refused: rc=2 :: iroh_pilot refused: a3_refuse_relay_refused:", "n0 relay URL -> relay_refused (Gateway)"),
+    ("a42", "OK gateway: different relay URL refused: rc=2 :: iroh_pilot refused: a3_refuse_relay_refused:", "other relay URL -> relay_refused (Gateway)"),
+    ("a42", "OK gateway: non-relay-only path selection refused", "Gateway refuses non-relay-only path selection"),
+    ("a42", "OK gateway: discovery refused: rc=2 :: iroh_pilot refused: a3_refuse_discovery_refused", "discovery on -> discovery_refused"),
+    ("a42", "OK client: n0 relay refused: REFUSED relay_refused", "client refuses n0 relay"),
+    ("a42", "OK client: different relay refused: REFUSED relay_refused", "client refuses look-alike relay (other port)"),
+    ("a42", "OK real peer: n0 relay as allow URL refused: peer a4_refuse_relay_config:", "real Peer: n0 allow URL -> relay_config"),
+    ("a42", "OK real peer: different relay refused: a3_refuse_relay_refused:", "real Peer: other relay -> relay_refused"),
+    ("a42", "OK real peer: pilot build refuses iroh_local: peer a4_refuse_transport_not_pilot:", "pilot build -> transport_not_pilot"),
+    ("a42", "no direct fallback", "relay killed -> live conn dropped, no direct fallback"),
+    ("a42", "OK relay down: new relay-only dial fails closed", "relay down -> new dial fails closed"),
+    ("a42", "answered egress_off (Peer's SPIKE_PUBLIC_EGRESS off", "iroh_pilot with SPIKE_PUBLIC_EGRESS unset refuses OPENs (egress_off)"),
+    # Gateway egress + kill switch (A4.3)
+    ("a43", "OK default OFF: /gw/start -> 403 egress_off/flag_off refused_at=gateway; nothing forwarded", "default OFF at the Gateway"),
+    ("a43", "egress_reason=egress_off detail=local_off", "SPIKE_PUBLIC_EGRESS=0 -> egress_off/local_off"),
+    ("a43", "egress_reason=egress_off detail=no_state", "Control unreachable -> egress_off/no_state"),
+    ("a43", "-> 403 admin_local_only", "Control switch is local-only"),
+    ("a43", "-> 403 egress_not_allowlisted at the gateway; no AUTH_TICKET sent", "off-allowlist host refused AT THE GATEWAY (Peer would allow; never forwarded)"),
+    ("a43", "reason=egress_off detail=flag_stale", "stale flag (Control frozen) -> egress_off/flag_stale"),
+    ("a43", "reason=egress_allowlist_mismatch", "allowlist version mismatch -> egress_allowlist_mismatch (Gateway)"),
+    ("a43", "stream closed egress_budget_exceeded", "byte cap -> egress_budget_exceeded (Gateway authoritative)"),
+    ("a43", "next OPEN -> 403 egress_budget_exceeded", "over cap -> new OPENs refused"),
+    ("a43", "refused at the real peer: a4_refuse_egress_resolved_non_public:priv.example.com->10.73.0.1",
+     "allowlisted name -> private IP refused at the real Peer (egress_resolved_non_public)"),
+    ("a43", "OK real peer with a different allowlist -> refused at the peer: egress_allowlist_mismatch", "allowlist mismatch at the real Peer"),
+    ("a43", "P8 peer offline_reason=egress_off", "kill switch off -> Peer P8 egress_off"),
+    # Peer egress (A4.4)
+    ("a44", "a4_refuse_egress_not_allowlisted:site1.pilot.example:80", "off-allowlist dest refused AT THE PEER (egress_not_allowlisted)"),
+    ("a44", "a4_refuse_egress_resolved_non_public:site2.pilot.example->169.254.169.254", "metadata IP via allowlisted name refused at the Peer"),
+    ("a44", "a4_refuse_egress_stream_limit:2", "third concurrent stream -> egress_stream_limit"),
+    ("a44", "corrupt budget -> a4_refuse_egress_budget:state_corrupt", "corrupt byte counter fails closed"),
+    ("a44", "restart 2: bytes_today=", "byte budget survives restarts"),
+    ("a44", "a4_refuse_egress_pin_mismatch:", "sslip/explicit pin disagreement refused at the Peer"),
+    ("a44", "A44_PINNED_OK", "pinned entry connects to the pin"),
+    ("a44", "(no DNS)", "pinned entry never asks DNS (Peer)"),
+    ("a44", "not retrying", "relay-path watcher trip: closed, no retry"),
+    ("a44", "A44_RELAY_PATH_OK", "relay-path e2e ran (real relay-only dial + watcher trip)"),
+    # Guard unit tests (A4.1) cited by name
+    ("a41", "pilot_pinned_resolve_skips_dns ... ok", "pinned/sslip entries never call the resolver (panicking resolver test)"),
+    ("a41", "pilot_sslip_allowlist_parse ... ok", "sslip entries must embed a public IP"),
+    ("a41", "pilot_egress_dest_check ... ok", "literal-IP OPEN -> egress_not_allowlisted"),
+    ("a41", "pilot_resolve_and_pin ... ok", "mixed answer / rebinding stand-in refused"),
+    ("a41", "pilot_kill_switch ... ok", "kill switch: stale = off, future ts = stale"),
+    ("a41", "A4.1_PY_PILOT_SELFTEST_OK", "Python mirror agrees"),
+    # Stripe (A4.6)
+    ("a46", "UX c2_add_funds_test", "test top-up prints UX c2_add_funds_test"),
+    ("a46", "Control refused to start", "sk_live_ key -> Control refuses to start"),
+)
+# Timings: (smoke, regex with one float group, max seconds, what)
+A4_TIMING_GREPS = (
+    ("a43", r"OK flag off -> held stream closed in ([\d.]+)s", 5.0, "flag off -> open stream closed (Gateway)"),
+    ("a43", r"OK real peer: flag off -> stream closed in ([\d.]+)s", 5.0, "flag off -> real Peer stream closed"),
+    ("a43", r"closed after ([\d.]+)s \(max age 5 s \+ 1 s poll\)", 6.0, "Control frozen -> stale -> closed (max age 5 s + 1 s poll)"),
+    ("a44", r"A44_NETNS_STAND_IN_OK closed_after_ms=(\d+)", 5000.0, "Control silent -> Peer closes stream (ms)"),
+    ("a44", r"P8 '[^']*' in ([\d.]+)s", 2.0, "watcher trip -> P8 within 2 s"),
+)
+# Gateway-side UDP datagram counters stay 0 under RelayOnly.
+A4_UDP_ZERO_GREPS = (
+    ("a42", "OK relay-only connection (real stream-peer): gateway {'path': 'relay'", "'udp_recv': 0, 'udp_send': 0"),
+    ("a44", "OK run A: relay-only connect", "'udp_recv': 0, 'udp_send': 0"),
+)
+A4_NOROUTE_GREPS = (
+    ("a42", "OK a42-gw / a42-relay / a42-peer: no default route (v4/v6)"),
+    ("a43", "OK no default route in a42-gw/a42-relay/a42-peer/a43-site"),
+    ("a44", "OK netns has no default route"),
+)
+
+
+def _a4_strict():
+    impl = os.environ.get("SPIKE_IMPL", "python").strip().lower() or "python"
+    return impl == "rust" or os.environ.get("SPIKE_A4", "").strip() == "1"
+
+
+def _strip_rust_comments(src):
+    """Drop // line comments (incl. /// and //!) and nested /* */ block comments; keep string and
+    char literals intact so `"//"` inside a string isn't treated as a comment. Newlines kept."""
+    out, i, n, depth = [], 0, len(src), 0
+    while i < n:
+        c, nx = src[i], src[i + 1] if i + 1 < n else ""
+        if depth:
+            if c == "/" and nx == "*":
+                depth += 1; i += 2; continue
+            if c == "*" and nx == "/":
+                depth -= 1; i += 2; continue
+            if c == "\n":
+                out.append(c)
+            i += 1; continue
+        if c == "/" and nx == "/":
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c == "/" and nx == "*":
+            depth = 1; i += 2; continue
+        if c == "r" and _re.match(r'r#*"', src[i:i + 8]) and not (i and (src[i - 1].isalnum() or src[i - 1] == "_")):
+            hashes = _re.match(r'r(#*)"', src[i:]).group(1)
+            close = '"' + hashes
+            j = src.find(close, i + 2 + len(hashes))
+            j = n if j < 0 else j + len(close)
+            out.append(src[i:j]); i = j; continue
+        if c == "'":
+            m = _re.match(r"'(?:\\.[^']{0,8}|[^'\\])'", src[i:i + 12])
+            if m:  # char literal ('"', '\'', '\u{..}'); otherwise a lifetime
+                out.append(m.group(0)); i += len(m.group(0)); continue
+        if c == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            out.append(src[i:j + 1]); i = j + 1; continue
+        out.append(c); i += 1
+    return "".join(out)
+
+
+def scan_insecure_calls(roots):
+    """[(file, line_no, line)] for INSECURE_CALL_RE matches outside comments."""
+    hits = []
+    for root in roots:
+        for f in sorted(Path(root).rglob("*.rs")):
+            code = _strip_rust_comments(f.read_text(errors="replace")).splitlines()
+            for k, line in enumerate(code, 1):
+                if INSECURE_CALL_RE.search(line):
+                    hits.append((str(f), k, line.strip()))
+    return hits
+
+
+def _a4_insecure_selftest():
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="a4grep_") as d:
+        bad, good = Path(d, "bad"), Path(d, "good")
+        bad.mkdir(); good.mkdir()
+        (bad / "x.rs").write_text("fn f(b: Builder) -> Builder {\n    b.insecure_skip_relay_cert_verify (true)\n}\n")
+        (good / "y.rs").write_text(
+            "/// Never calls `insecure_skip_relay_cert_verify(true)`.\n//! insecure_skip_relay_cert_verify(x)\n"
+            "// insecure_skip_relay_cert_verify(true);\n  /* insecure_skip_relay_cert_verify(true)\n"
+            "     still /* nested */ comment insecure_skip_relay_cert_verify( */\n"
+            "fn g() { let s = \"// not a comment\"; let t = \"insecure_skip_relay_cert_verify\"; }\n"
+            "fn h<'a>(x: &'a str) -> char { let _r = r#\"a \" // b\"#; '\"' }\n")
+        (bad / "z.rs").write_text("fn k() -> char { let q = '\"'; b.insecure_skip_relay_cert_verify(true); q }\n")
+        if len(scan_insecure_calls([bad])) != 2:
+            raise SystemExit("FAIL a4 insecure grep self-test: real call not detected")
+        if scan_insecure_calls([good]):
+            raise SystemExit(f"FAIL a4 insecure grep self-test: comment-only mention flagged: {scan_insecure_calls([good])}")
+    print("OK insecure grep self-test: real call detected, comment-only mentions ignored", flush=True)
+
+
+def a4_check_insecure():
+    print("\n=== A4.8 relay TLS: no insecure_skip_relay_cert_verify( call in rust/crates/*/src ===", flush=True)
+    _a4_insecure_selftest()
+    roots = sorted(p for p in (ROOT / "rust" / "crates").glob("*/src") if p.is_dir())
+    hits = scan_insecure_calls(roots)
+    if hits:
+        raise SystemExit("FAIL a4: insecure_skip_relay_cert_verify call(s):\n" + "\n".join(f"  {f}:{k}: {l}" for f, k, l in hits))
+    names = ", ".join(r.parent.name for r in roots)
+    print(f"OK no insecure_skip_relay_cert_verify( call outside comments in rust/crates/*/src ({names})", flush=True)
+
+
+def a4_check_default_build(pending):
+    """Default (no-feature) builds pull no iroh / iroh-relay and enable only [default]."""
+    import shutil
+
+    print("\n=== A4.8 default build: no iroh_pilot / iroh in default features (cargo tree) ===", flush=True)
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pending.append("default-build check skipped (no cargo)")
+        print("SKIP a4 default-build check: cargo not found", flush=True)
+        return
+    for crate in ("stream-peer", "stream-gateway", "stream-relay"):
+        base = [cargo, "tree", "--locked", "-p", crate, "-e", "normal"]
+        r = subprocess.run(base + ["--depth", "0", "-f", "{p} [{f}]"], cwd=str(ROOT / "rust"),
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        feats = r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else ""
+        if r.returncode != 0 or not feats.endswith("[default]"):
+            raise SystemExit(f"FAIL a4: {crate} default features not exactly [default]: {feats or r.stderr.strip()[-300:]}")
+        r = subprocess.run(base + ["--prefix", "none"], cwd=str(ROOT / "rust"), stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        iroh = [l for l in r.stdout.splitlines() if _re.match(r"^iroh(-relay)? v", l)]
+        if r.returncode != 0 or iroh:
+            raise SystemExit(f"FAIL a4: {crate} default build pulls {iroh or r.stderr.strip()[-300:]}")
+        print(f"OK {crate} default build: features [default], no iroh / iroh-relay in cargo tree", flush=True)
+
+
+def _free_port_base(width=10):
+    import socket
+
+    for base in range(44100, 60000, 100):
+        try:
+            socks = []
+            for port in range(base, base + width):
+                s = socket.socket()
+                s.bind(("127.0.0.1", port))
+                socks.append(s)
+            for s in socks:
+                s.close()
+            return base
+        except OSError:
+            for s in socks:
+                s.close()
+    raise SystemExit("FAIL a4: no free SPIKE_PORT_BASE found for the default `all` run")
+
+
+def a4_check_default_all():
+    """Default path unchanged: `all` -> SPIKE_DOD_GREEN with SPIKE_PUBLIC_EGRESS unset."""
+    print("\n=== A4.8 default path: run_local_asserts.py all (SPIKE_PUBLIC_EGRESS unset) ===", flush=True)
+    env = {k: v for k, v in os.environ.items() if k not in ("SPIKE_PUBLIC_EGRESS",) + STRIPE_SECRET_ENVS}
+    env.setdefault("SPIKE_PORT_BASE", str(_free_port_base()))
+    p = subprocess.run([sys.executable, "-u", str(Path(__file__).resolve()), "all"], cwd=str(ROOT), env=env,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = {l.strip() for l in p.stdout.splitlines()}
+    if p.returncode != 0 or "SPIKE_DOD_GREEN" not in lines:
+        raise SystemExit(f"FAIL a4: default `all` not green (rc={p.returncode}):\n{p.stdout[-1500:]}")
+    if "OK control stripe mode: mock (/v1/topup/test -> 409 stripe_test_unavailable)" not in lines:
+        raise SystemExit("FAIL a4: default `all` did not prove Control mock top-up mode")
+    print(f"OK default `all` -> SPIKE_DOD_GREEN (SPIKE_PORT_BASE={env['SPIKE_PORT_BASE']}, "
+          "SPIKE_PUBLIC_EGRESS unset, Control in mock top-up mode)", flush=True)
+
+
+def a4_check_evidence(outs, pending):
+    """Refusal / timing / UDP / no-route / screen-order greps over the smoke outputs."""
+    print("\n=== A4.8 greps over sub-smoke output ===", flush=True)
+    screens = _load_screens()
+    p8 = next(c for c in screens["consent"] if c["id"] == "p8_offline")
+    for tag, needle, what in A4_REFUSAL_GREPS:
+        if not outs.get(tag):
+            continue
+        if needle not in outs[tag]:
+            raise SystemExit(f"FAIL a4: {tag} output lacks {needle!r} ({what})")
+        print(f"OK [{tag}] {what}: {needle!r}", flush=True)
+    for tag, rx, limit, what in A4_TIMING_GREPS:
+        if not outs.get(tag):
+            continue
+        vals = [float(g) for g in _re.findall(rx, outs[tag]) if g]
+        if not vals:
+            raise SystemExit(f"FAIL a4: {tag} output lacks timing for {what} (/{rx}/)")
+        if max(vals) > limit:
+            raise SystemExit(f"FAIL a4: {tag} {what}: {max(vals):g} > {limit:g}")
+        print(f"OK [{tag}] {what}: {max(vals):g} <= {limit:g}", flush=True)
+    if outs.get("a44"):
+        line = p8["reason_lines"]["relay_path_required"]
+        if line not in outs["a44"]:
+            raise SystemExit("FAIL a4: a44 lacks the exact P8 relay_path_required line from fixtures/screens.json")
+        print("OK [a44] watcher trip -> exact P8 relay_path_required line (fixtures/screens.json) on real Peer stderr", flush=True)
+    # UDP: Gateway counters 0 under RelayOnly; Peer counters must be real numbers (0) too.
+    for tag, anchor, zero in A4_UDP_ZERO_GREPS:
+        if not outs.get(tag):
+            continue
+        hit = [l for l in outs[tag].splitlines() if anchor in l]
+        if not hit or not all(zero in l for l in hit):
+            raise SystemExit(f"FAIL a4: {tag} gateway UDP counters not 0 under RelayOnly: {hit[:1]}")
+        print(f"OK [{tag}] gateway UDP datagram counters 0/0 under RelayOnly", flush=True)
+    peer_udp = [m for t in ("a42", "a43", "a44") for m in _re.findall(r"udp_counters(=unavailable| total=\d+)", outs.get(t, ""))]
+    if peer_udp:
+        if any(v.startswith(" total=") and v != " total=0" for v in peer_udp):
+            raise SystemExit(f"FAIL a4: Peer UDP datagrams under RelayOnly: {sorted(set(peer_udp))}")
+        if any(v == "=unavailable" for v in peer_udp):
+            pending.append("Peer UDP counters `unavailable` in iroh_pilot builds (Peer pilot lane refuses "
+                           "udp_counters_unavailable; needs Peer-side counters = 0 evidence)")
+            print("PENDING [a42/a43/a44] Peer logs udp_counters=unavailable (Gateway side is 0/0)", flush=True)
+        else:
+            print("OK Peer UDP datagram counters total=0 under RelayOnly", flush=True)
+    for tag, needle in A4_NOROUTE_GREPS:
+        if outs.get(tag):
+            if needle not in outs[tag]:
+                raise SystemExit(f"FAIL a4: {tag} output lacks {needle!r}")
+            print(f"OK [{tag}] netns has no default route: {needle!r}", flush=True)
+    # Screen order on the real Peer (a43 phase B): P1 -> P2 -> P9 before the first pilot dial.
+    if outs.get("a43"):
+        lines = outs["a43"].splitlines()
+        def first(s):
+            return next((k for k, l in enumerate(lines) if l.strip() == s), None)
+        order = [first("[peer] UX_SCREEN p1_isp_ack"), first("[peer] UX_SCREEN p2_consent"),
+                 first("[peer] UX_SCREEN p9_allowlist")]
+        dial = next((k for k, l in enumerate(lines) if l.strip().startswith("[peer] peer iroh_pilot connected")), None)
+        if None in order or dial is None or not (order[0] < order[1] < order[2] < dial):
+            raise SystemExit(f"FAIL a4: real Peer screen order not P1 -> P2 -> P9 -> dial (lines {order} dial {dial})")
+        print("OK [a43] real Peer: UX_SCREEN p1_isp_ack -> p2_consent -> p9_allowlist before first pilot dial", flush=True)
+    if outs.get("a42"):
+        if "UX_SCREEN p2_consent" not in outs["a42"] or "UX_SCREEN p9_allowlist" in outs["a42"]:
+            raise SystemExit("FAIL a4: a42 (SPIKE_PUBLIC_EGRESS off) should show P1/P2 and no p9_allowlist")
+        print("OK [a42] SPIKE_PUBLIC_EGRESS off: P1 -> P2, no p9_allowlist", flush=True)
+    if outs.get("a46"):
+        c2 = next(c for c in screens["consent"] if c["id"] == "c2_add_funds_test")
+        for frag in c2.get("required_copy") or []:
+            if frag not in outs["a46"]:
+                raise SystemExit(f"FAIL a4: c2_add_funds_test required_copy {frag!r} (fixtures/screens.json) not in a46 output")
+        print(f"OK [a46] c2_add_funds_test required_copy from fixtures/screens.json: {c2.get('required_copy')}", flush=True)
+
+
+def _a4_ux_inner():
+    """Inside a throwaway netns (lo + 10.73.0.200 only): start the pilot Peer with no ISP ack (never
+    dials), GET /peer/consent/p1, p2, p9, p8; print stderr + the p8 JSON."""
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="a4ux_"))
+    peer_bin = ROOT / "rust" / "target" / "pilot" / "debug" / "stream-peer"
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp), "RUST_LOG": "info", "NO_COLOR": "1",
+           "SPIKE_TRANSPORT": "iroh_pilot", "SPIKE_IROH_KEY_PATH": str(tmp / "peer.key"),
+           "SPIKE_IROH_BIND": "10.73.0.200:0",
+           "SPIKE_GATEWAY_ENDPOINT_ID": "162e075fff299e4c5fba4903ff9f4c9279aeaca5b617c4d9ec0d126dcf00d7a1",
+           "SPIKE_RELAY_ALLOW_URL": "http://10.73.0.254:3340/", "CONTROL_URL": "http://10.73.0.254:8080",
+           "SPIKE_PEER_ID": "peer_a4ux", "SPIKE_PEER_ADMIN": "127.0.0.1:9200", "SPIKE_HOST_TIER": "always_on",
+           "SPIKE_PUBLIC_EGRESS": "1", "SPIKE_EGRESS_ALLOWLIST": "echo.example.com:443=198.51.100.10"}
+    route = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True).stdout.strip()
+    print(f"A4UX_DEFAULT_ROUTE={route or 'none'}", flush=True)
+    err = open(tmp / "peer.stderr", "w+")
+    p = subprocess.Popen([str(peer_bin)], env=env, stdout=err, stderr=subprocess.STDOUT)
+    try:
+        wait_deadline = time.monotonic() + health_timeout_s()
+        while not http_ok("http://127.0.0.1:9200/health"):
+            if p.poll() is not None or time.monotonic() >= wait_deadline:
+                err.flush(); err.seek(0)
+                raise SystemExit("FAIL a4 ux: pilot Peer /health not up\n" + _proc_state("peer", p, err.read().splitlines()))
+            time.sleep(HEALTH_POLL_S)
+        for s in ("p1", "p2", "p9"):
+            urllib.request.urlopen(f"http://127.0.0.1:9200/peer/consent/{s}", timeout=5).read()
+        with urllib.request.urlopen("http://127.0.0.1:9200/peer/consent/p8", timeout=5) as r:
+            print("A4UX_P8_JSON=" + json.dumps(json.loads(r.read().decode())), flush=True)
+        time.sleep(0.5)
+    finally:
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    err.seek(0)
+    print("A4UX_STDERR_BEGIN", flush=True)
+    sys.stdout.write(err.read())
+    print("A4UX_STDERR_END", flush=True)
+    return 0
+
+
+def _ux_block(lines, header, screen):
+    i = next((n for n, l in enumerate(lines) if l.strip() == header), None)
+    if i is None:
+        return None
+    j = next((n for n in range(i + 1, len(lines)) if lines[n].strip() == screen), None)
+    if screen is None:
+        j = next((n for n in range(i + 1, len(lines)) if lines[n].startswith(("peer ", "UX ", "UX_SCREEN"))), len(lines))
+    return None if j is None else "\n".join(lines[i + 1:j])
+
+
+def a4_ux_copy_check():
+    """P1 / P2 / P9 blocks on the pilot Peer's real stderr + P8 copy from its admin API, all checked
+    against fixtures/screens.json (required_copy + forbidden_user_facing_substrings), nothing hardcoded."""
+    print("\n=== A4.8 UX copy (pilot Peer stderr + P8 API, own netns, no default route) ===", flush=True)
+    peer_bin = ROOT / "rust" / "target" / "pilot" / "debug" / "stream-peer"
+    if not peer_bin.exists():
+        raise SystemExit(f"FAIL a4: {peer_bin} missing (a42 builds it)")
+    ns = f"a4ux-{os.getpid()}"
+    user = os.environ.get("USER") or subprocess.check_output(["id", "-un"], text=True).strip()
+    try:
+        for cmd in (["ip", "netns", "add", ns], ["ip", "-n", ns, "link", "set", "lo", "up"],
+                    ["ip", "-n", ns, "addr", "add", "10.73.0.200/24", "dev", "lo"]):
+            subprocess.run(["sudo", "-n", *cmd], check=True, stdin=subprocess.DEVNULL)
+        p = subprocess.run(["sudo", "-n", "ip", "netns", "exec", ns, "sudo", "-n", "-u", user, "env",
+                            f"PATH={os.environ.get('PATH', '')}", f"HOME={os.environ.get('HOME', '')}",
+                            sys.executable, "-u", str(Path(__file__).resolve()), "_a4_ux_inner"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    finally:
+        subprocess.run(["sudo", "-n", "ip", "netns", "del", ns], stdin=subprocess.DEVNULL)
+    out = p.stdout
+    if p.returncode != 0 or "A4UX_STDERR_BEGIN" not in out:
+        raise SystemExit(f"FAIL a4 ux capture rc={p.returncode}: {(out + p.stderr)[-800:]}")
+    if "A4UX_DEFAULT_ROUTE=none" not in out:
+        raise SystemExit("FAIL a4: ux netns has a default route")
+    print("OK [a4ux] netns has no default route", flush=True)
+    stderr = out.split("A4UX_STDERR_BEGIN", 1)[1].split("A4UX_STDERR_END", 1)[0].splitlines()
+    screens = _load_screens()
+    forbidden = screens.get("forbidden_user_facing_substrings", [])
+    by_id = {c["id"]: c for c in screens["consent"]}
+    blocks = {"p1_isp_ack": _ux_block(stderr, "UX P1", None), "p2_consent": _ux_block(stderr, "UX P2", "UX_SCREEN p2_consent"),
+              "p9_allowlist": _ux_block(stderr, "UX P9", "UX_SCREEN p9_allowlist")}
+    for sid, block in blocks.items():
+        if block is None:
+            raise SystemExit(f"FAIL a4: no UX block for {sid} on pilot Peer stderr")
+        for frag in by_id[sid].get("required_copy") or []:
+            if frag not in block:
+                raise SystemExit(f"FAIL a4: {sid} required_copy {frag!r} (fixtures/screens.json) not on Peer stderr")
+        bad = [b for b in forbidden if b in block]
+        if bad:
+            raise SystemExit(f"FAIL a4: forbidden user-facing substring(s) {bad} in Peer {sid} block")
+        print(f"OK [a4ux] {sid} required_copy on pilot Peer stderr: {by_id[sid].get('required_copy')}; no forbidden substrings", flush=True)
+    p8j = json.loads(next(l for l in out.splitlines() if l.startswith("A4UX_P8_JSON="))[len("A4UX_P8_JSON="):])
+    fx = by_id["p8_offline"]
+    for k in ("title", "body_lines", "cta"):
+        if p8j.get(k) != fx.get(k):
+            raise SystemExit(f"FAIL a4: Peer P8 {k} != fixtures/screens.json p8_offline.{k}")
+    text = "\n".join([p8j["title"], *p8j["body_lines"], p8j["cta"]])
+    for frag in fx.get("required_copy") or []:
+        if frag not in text:
+            raise SystemExit(f"FAIL a4: p8_offline required_copy {frag!r} missing from Peer P8")
+    leaked = [c for c in fx.get("reason_lines", {}) if c in text] + [b for b in forbidden if b in text]
+    if leaked:
+        raise SystemExit(f"FAIL a4: Peer P8 user-facing text contains {leaked}")
+    print("OK [a4ux] Peer P8 title/body/cta == fixtures/screens.json p8_offline; required_copy present; "
+          "no raw reason code / forbidden substrings", flush=True)
+
+
+def _a4_selftest():
+    """Offline self-test of the a4 grep helpers (no smokes): insecure grep + comment stripping."""
+    _a4_insecure_selftest()
+    print("A4_SELFTEST_OK", flush=True)
+    return 0
+
+
+def run_a4_pilot():
+    """A4.8 / TOM-28: A4.0-A4.7 + cross-cutting checks -> A4_PILOT_GREEN (never with a skip/pending)."""
+    import shutil
+
+    strict = _a4_strict()
+    pending: list[str] = []
+    outs: dict[str, str] = {}
+
+    def note(tag, status):
+        if status == "skip":
+            pending.append(f"{tag} skipped")
+        elif status == "pending":
+            pending.append(f"{tag} (scripts/{A45_SCRIPT}.py not on main)" if tag == "a45" else f"{tag} pending")
+
+    for tag, fn in (("a40", run_a40_compose_guard), ("a41", run_a41_pilot_guard),
+                    ("a42", run_a42_self_relay), ("a43", run_a43_gateway_egress),
+                    ("a44", run_a44_peer_egress), ("a45", run_a45_peer_package),
+                    ("a46", run_a46_stripe_test_topup), ("a47", run_a47_copy_fixtures)):
+        status, outs[tag] = fn()
+        note(tag, status)
+        if tag == "a44" and status == "pass":
+            final = A44_FINAL_MARKER in {l.strip() for l in outs[tag].splitlines()}
+            if not final:
+                pending.append(f"a44 final marker {A44_FINAL_MARKER} (only A4.4_PEER_EGRESS_PART1_GREEN)")
+                print(f"PENDING a44: a4 needs {A44_FINAL_MARKER}; got PART1 only", flush=True)
+        if tag == "a46" and status == "pass":
+            lane_b = next((l.split("A46_LANE_B=", 1)[1] for l in outs[tag].splitlines() if "A46_LANE_B=" in l), "?")
+            print(f"OK a46 green; lane B ({lane_b}) not required", flush=True)
+
+    a4_check_insecure()
+    a4_check_default_build(pending)
+    a4_check_evidence(outs, pending)
+    if outs.get("a42"):
+        a4_ux_copy_check()
+    else:
+        pending.append("UX copy check skipped (needs a42's pilot Peer build + sudo)")
+
+    print("\n=== A4.8 banned-word / UX checks (existing Rust Peer tests, unchanged) ===", flush=True)
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pending.append("Rust ux tests skipped (no cargo)")
+        print("SKIP a4 Rust ux tests: cargo not found", flush=True)
+    else:
+        p = subprocess.run([cargo, "test", "--locked", "-q", "-p", "stream-peer", "--", "ux::"],
+                           cwd=str(ROOT / "rust"), stdin=subprocess.DEVNULL)
+        if p.returncode != 0:
+            raise SystemExit("FAIL a4: stream-peer ux:: tests")
+        print("PASS stream-peer ux:: tests (fixture drift, forbidden copy, screen order)", flush=True)
+
+    a4_check_default_all()
+
+    if pending:
+        print(f"\nA4_PILOT_NOT_GREEN pending: {'; '.join(pending)}", flush=True)
+        if strict:
+            raise SystemExit(1)
+        return 3
+    print("\nA4_PILOT_GREEN", flush=True)
+    return 0
+
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     stripe_live = scrub_stripe_env(mode)
@@ -782,6 +1300,20 @@ def main():
         return 0
     if mode in ("a3", "iroh-local", "iroh_local"):
         return run_a3_iroh_local()
+    if mode in ("a45", "peer-package", "peer_package"):
+        status, _ = run_a45_peer_package()
+        if status == "pending":
+            return 1 if _a4_strict() else 3
+        return 0
+    if mode in ("a47", "copy-fixtures", "copy_fixtures"):
+        run_a47_copy_fixtures()
+        return 0
+    if mode in ("a4", "pilot", "alpha4"):
+        return run_a4_pilot()
+    if mode == "_a4_ux_inner":
+        return _a4_ux_inner()
+    if mode == "_a4_selftest":
+        return _a4_selftest()
     if mode in ("a33", "ticket-bind", "ticket_bind"):
         run_a33_ticket_bind()
         return 0

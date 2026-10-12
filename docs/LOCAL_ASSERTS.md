@@ -349,3 +349,52 @@ python3 scripts/a44_peer_egress_smoke.py               # the smoke directly
 - Proves: allowlisted name → pinned `198.51.100.10:443` + echo (bytes counted both ways); metadata answer → `egress_resolved_non_public`; other port → `egress_not_allowlisted`; Control silent → stale → stream closed ≤5 s and P8.
 - **Markers:** the runner accepts `A4.4_PEER_EGRESS_GREEN` (final, after part 2) or `A4.4_PEER_EGRESS_PART1_GREEN`, and prints which one matched: `PASS a44_peer_egress_smoke (marker: ...)`. To require the final marker, drop the PART1 entry from `A44_MARKERS` in `run_local_asserts.py`.
 - Missing `cargo` / `sudo -n` → `SKIP a44 ...` (exit 0), unless `SPIKE_IMPL=rust`, `SPIKE_A3=1` or `SPIKE_A4=1` → `FAIL a44: ...` (exit 1).
+
+## Alpha-4 copy fixtures (A4.7) and Peer package (A4.5)
+
+```bash
+python3 scripts/run_local_asserts.py a47     # → A4.7_COPY_FIXTURES_GREEN (alias copy-fixtures, copy_fixtures); Python only
+python3 scripts/run_local_asserts.py a45     # → A4.5_PEER_PACKAGE_GREEN (alias peer-package, peer_package)
+```
+
+- `a45` wraps Peer's `scripts/a45_peer_package_smoke.py` with the shared smoke helper (assumed needs: cargo + `sudo -n` + local docker; strict under `SPIKE_A4=1`). While the script isn't on main it prints `PENDING a45 (...)` and exits 1 under `SPIKE_A4=1` / `SPIKE_IMPL=rust`, else 3.
+
+## Alpha-4 pilot roll-up (A4.8 / TOM-28)
+
+Spec: [`ALPHA4_PILOT.md`](ALPHA4_PILOT.md) (*A4.8 must prove*). Mirrors the `a3` roll-up. **Opt-in, not in `all`.** Needs cargo, `sudo -n` and local docker.
+
+```bash
+python3 scripts/run_local_asserts.py a4                  # → A4_PILOT_GREEN (aliases: pilot, alpha4)
+SPIKE_A4=1 bash scripts/demo_alpha.sh                    # default demo (+ a3 if SPIKE_A3=1) + a4 block
+python3 scripts/run_local_asserts.py _a4_selftest        # offline self-test of the TLS-skip grep
+```
+
+**Order:** `a40` → `a41` → `a42` → `a43` → `a44` → `a45` → `a46` → `a47`, then the cross-cutting checks below. Any FAIL exits 1 at once.
+
+**Green rule:** `A4_PILOT_GREEN` only if every step passed with no skip and nothing pending. Otherwise `A4_PILOT_NOT_GREEN pending: <list>` and exit 1 under `SPIKE_A4=1` / `SPIKE_IMPL=rust`, else 3. Pending items:
+- `a44` must print the **final** `A4.4_PEER_EGRESS_GREEN`; `A4.4_PEER_EGRESS_PART1_GREEN` alone is pending (the standalone `a44` mode still accepts PART1).
+- `a45` script not on main.
+- Any sub-smoke SKIP (missing cargo / sudo / docker without a strict env).
+- Peer UDP counters logged as `udp_counters=unavailable` (see UDP below).
+
+**Cross-cutting checks** (each prints an `OK ...` line; the needles live in `A4_REFUSAL_GREPS`, `A4_TIMING_GREPS`, `A4_UDP_ZERO_GREPS`, `A4_NOROUTE_GREPS` in `run_local_asserts.py`):
+
+| Check | How |
+|---|---|
+| Relay TLS never skipped | Python scan of `rust/crates/*/src/**/*.rs` for `insecure_skip_relay_cert_verify\s*\(` after stripping `//`, `///`, `//!` and nested `/* */` comments (string, raw-string and char literals kept, so a mention in a string still trips it, fail-closed). `scripts/` is not scanned (a45 names the string on purpose). Self-test first: a temp file with a real call must be caught, a comment-only mention must not. |
+| Default build unchanged | `cargo tree --locked -p <crate> -e normal` for stream-peer, stream-gateway, stream-relay: root features exactly `[default]` and no `iroh` / `iroh-relay` package. |
+| Default path unchanged | Child `run_local_asserts.py all` with `SPIKE_PUBLIC_EGRESS` and Stripe secrets removed, on a free `SPIKE_PORT_BASE` (picked by binding, unless already set) → `SPIKE_DOD_GREEN` + `OK control stripe mode: mock`. a42: pilot Peer with `SPIKE_PUBLIC_EGRESS` unset answers `egress_off`. |
+| Off-allowlist refused at the Peer **and** the Gateway | a44 `a4_refuse_egress_not_allowlisted:site1.pilot.example:80`; a43 `-> 403 egress_not_allowlisted at the gateway; no AUTH_TICKET sent` (stand-in Peer would allow). Literal-IP OPEN: a41 test `pilot_egress_dest_check ... ok`. |
+| Private / metadata IP via an allowlisted name | a44 `a4_refuse_egress_resolved_non_public:site2.pilot.example->169.254.169.254`; a43 real Peer `...priv.example.com->10.73.0.1`; mixed answer / rebinding: a41 `pilot_resolve_and_pin ... ok`. |
+| Relays | a42: n0 allow URL → `relay_config` (Gateway, client, real Peer); n0 / other relay URL → `relay_refused` (Gateway, client, real Peer); non-relay-only path and discovery refused; pilot build refuses `iroh_local`; relay killed → no direct fallback; relay down → new dial fails closed. |
+| Kill switch ≤ 5 s | a43 `OK flag off -> held stream closed in Ns` and `OK real peer: flag off -> stream closed in Ns`, N ≤ 5; `UX`/P8 `peer offline_reason=egress_off`. Default OFF, `local_off`, `no_state`, non-local switch refused. |
+| Stale flag | a43 `reason=egress_off detail=flag_stale`, `closed after Ns (max age 5 s + 1 s poll)` with N ≤ 6 (5 s max age + 1 s poll); a44 Peer `closed_after_ms` ≤ 5000. |
+| Caps | a43 `stream closed egress_budget_exceeded` + next OPEN 403; a44 `a4_refuse_egress_stream_limit:2`, budget survives restarts, corrupt counter fails closed. Allowlist version mismatch at Gateway and Peer. |
+| UDP 0 under RelayOnly + watcher | Gateway counters `'udp_recv': 0, 'udp_send': 0` on the a42 relay-only line and a44 run A. Peer `udp_counters total=N` must be 0; `udp_counters=unavailable` is **pending**. Watcher trip (a44 run B, a4_local fake-UDP hook): exact `p8_offline.reason_lines.relay_path_required` line from `fixtures/screens.json` on Peer stderr, within 2 s, `not retrying`. |
+| Pinned / sslip never hit DNS | a41 `pilot_pinned_resolve_skips_dns ... ok` (panicking resolver), `pilot_sslip_allowlist_parse ... ok`; a44 `A44_PINNED_OK ... (no DNS)` and `a4_refuse_egress_pin_mismatch:`. |
+| Screen order | a43 real Peer: first `[peer] UX_SCREEN p1_isp_ack` < `p2_consent` < `p9_allowlist` < `[peer] peer iroh_pilot connected`. a42 (egress off): P1/P2 and **no** `p9_allowlist`. |
+| Copy (from fixtures, nothing hardcoded) | Own netns (lo + 10.73.0.200, no default route): pilot Peer (a42's `rust/target/pilot` build) with no ISP ack (never dials); `GET /peer/consent/p1`, `p2`, `p9` → `UX P1` / `UX P2` / `UX P9` blocks on its stderr must contain each screen's `required_copy` and no `forbidden_user_facing_substrings`; `GET /peer/consent/p8` title/body/cta must equal `p8_offline` with its `required_copy` and no raw reason code. a46 output must contain `c2_add_funds_test.required_copy`. a47 checks the Rust mirrors. Banned words: `cargo test -p stream-peer -- ux::` (unchanged). |
+| Stripe | a46 green; lane B status printed, **not required** (also under `SPIKE_A4=1`); secrets scrubbed. |
+| No public egress from the box | a42 `OK a42-gw / a42-relay / a42-peer: no default route (v4/v6)`, a43 `OK no default route in a42-gw/a42-relay/a42-peer/a43-site`, a44 `OK netns has no default route`, UX netns `A4UX_DEFAULT_ROUTE=none`. |
+
+Not covered by an a4 grep yet: "no redial after `endpoint_mismatch`" (A3 behaviour, not re-proved on the pilot lane).
