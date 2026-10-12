@@ -538,13 +538,13 @@ A45_MARKER = "A4.5_PEER_PACKAGE_GREEN"
 
 def run_a45_peer_package():
     """A4.5 Peer pilot package smoke (Peer's scripts/a45_peer_package_smoke.py, marker
-    A4.5_PEER_PACKAGE_GREEN). Returns ("pending", "") while the script isn't on main. Assumed to
-    need cargo + sudo + docker (pilot image); docker modes only use the local unix socket."""
+    A4.5_PEER_PACKAGE_GREEN): builds rust/crates/stream-peer/Dockerfile.pilot over the local unix
+    docker socket (sudo + docker; no host cargo). Returns ("pending", "") if the script is absent."""
     if not (ROOT / "scripts" / f"{A45_SCRIPT}.py").exists():
         print(f"\nPENDING a45 (scripts/{A45_SCRIPT}.py not on main)", flush=True)
         return "pending", ""
     return _run_netns_smoke("a45", "A4.5", A45_SCRIPT, A45_MARKER,
-                            needs=("cargo", "sudo", "docker"), strict_env="SPIKE_A4")
+                            needs=("sudo", "docker"), strict_env="SPIKE_A4")
 
 
 def run_a47_copy_fixtures():
@@ -822,7 +822,11 @@ A4_REFUSAL_GREPS = (
     ("a44", "A44_PINNED_OK", "pinned entry connects to the pin"),
     ("a44", "(no DNS)", "pinned entry never asks DNS (Peer)"),
     ("a44", "not retrying", "relay-path watcher trip: closed, no retry"),
-    ("a44", "A44_RELAY_PATH_OK", "relay-path e2e ran (real relay-only dial + watcher trip)"),
+    ("a44", "A44_PILOT_E2E_OK", "pilot e2e ran (real Peer DATA pump over the relay + watcher trip)"),
+    ("a44", "OK TLS GET /hello via the real Peer DATA pump", "real Peer forwards TLS to the allowlisted pinned site"),
+    ("a44", "3rd -> 403 egress_stream_limit", "real Peer: third held stream -> egress_stream_limit"),
+    ("a44", "Peer P8 peer offline_reason=egress_off", "real Peer: flag off -> P8 egress_off"),
+    ("a44", "no redial in", "watcher trip: one connect, no redial"),
     # Guard unit tests (A4.1) cited by name
     ("a41", "pilot_pinned_resolve_skips_dns ... ok", "pinned/sslip entries never call the resolver (panicking resolver test)"),
     ("a41", "pilot_sslip_allowlist_parse ... ok", "sslip entries must embed a public IP"),
@@ -830,6 +834,14 @@ A4_REFUSAL_GREPS = (
     ("a41", "pilot_resolve_and_pin ... ok", "mixed answer / rebinding stand-in refused"),
     ("a41", "pilot_kill_switch ... ok", "kill switch: stale = off, future ts = stale"),
     ("a41", "A4.1_PY_PILOT_SELFTEST_OK", "Python mirror agrees"),
+    # Pilot Peer image (A4.5)
+    ("a45", "a45: uid 10001, defaults ok, no presets", "image runs non-root (uid 10001; `id -u` in the container) with no consent presets"),
+    ("a45", "no a4_local marker SPIKE_A4_FAKE_UDP_DATAGRAMS", "image binary lacks SPIKE_A4_FAKE_UDP_DATAGRAMS (no a4_local fake-UDP hook)"),
+    ("a45", "no insecure_skip_relay_cert_verify", "image binary lacks insecure_skip_relay_cert_verify"),
+    ("a45", "a45: no key/budget file in any image layer", "no key / budget file in any image layer"),
+    ("a45", "/data empty in image", "/data empty in the image"),
+    ("a45", "on-box relay refused (Pilot lane)", "image is the Pilot lane (on-box relay refused)"),
+    ("a45", "a45: --network none up, healthy", "image runs --network none, healthy, key 0600 uid 10001"),
     # Stripe (A4.6)
     ("a46", "UX c2_add_funds_test", "test top-up prints UX c2_add_funds_test"),
     ("a46", "Control refused to start", "sk_live_ key -> Control refuses to start"),
@@ -841,16 +853,18 @@ A4_TIMING_GREPS = (
     ("a43", r"closed after ([\d.]+)s \(max age 5 s \+ 1 s poll\)", 6.0, "Control frozen -> stale -> closed (max age 5 s + 1 s poll)"),
     ("a44", r"A44_NETNS_STAND_IN_OK closed_after_ms=(\d+)", 5000.0, "Control silent -> Peer closes stream (ms)"),
     ("a44", r"P8 '[^']*' in ([\d.]+)s", 2.0, "watcher trip -> P8 within 2 s"),
+    ("a44", r"OK flag off -> both held streams closed in <= ([\d.]+)s", 5.0, "flag off -> real Peer held streams closed"),
 )
 # Gateway-side UDP datagram counters stay 0 under RelayOnly.
 A4_UDP_ZERO_GREPS = (
     ("a42", "OK relay-only connection (real stream-peer): gateway {'path': 'relay'", "'udp_recv': 0, 'udp_send': 0"),
-    ("a44", "OK run A: relay-only connect", "'udp_recv': 0, 'udp_send': 0"),
+    ("a44", "OK no UDP datagrams: gateway iroh_path", "'udp_recv': 0, 'udp_send': 0"),
 )
 A4_NOROUTE_GREPS = (
     ("a42", "OK a42-gw / a42-relay / a42-peer: no default route (v4/v6)"),
     ("a43", "OK no default route in a42-gw/a42-relay/a42-peer/a43-site"),
     ("a44", "OK netns has no default route"),
+    ("a45", "a45: --network none up"),
 )
 
 
@@ -1035,16 +1049,21 @@ def a4_check_evidence(outs, pending):
         if not hit or not all(zero in l for l in hit):
             raise SystemExit(f"FAIL a4: {tag} gateway UDP counters not 0 under RelayOnly: {hit[:1]}")
         print(f"OK [{tag}] gateway UDP datagram counters 0/0 under RelayOnly", flush=True)
-    peer_udp = [m for t in ("a42", "a43", "a44") for m in _re.findall(r"udp_counters(=unavailable| total=\d+)", outs.get(t, ""))]
-    if peer_udp:
+    # Peer side must log real counters (`udp_counters total=0 ...`); Gateway 0/0 alone isn't enough.
+    # a44 run B's deliberate watcher trip (fake UDP hook) is a refusal line, not a counter line.
+    udp_tags = [t for t in ("a42", "a43", "a44", "a45") if outs.get(t)]
+    peer_udp = [m for t in udp_tags for m in _re.findall(r"udp_counters(=unavailable|_unavailable| total=\d+)", outs[t])]
+    if udp_tags:
         if any(v.startswith(" total=") and v != " total=0" for v in peer_udp):
             raise SystemExit(f"FAIL a4: Peer UDP datagrams under RelayOnly: {sorted(set(peer_udp))}")
-        if any(v == "=unavailable" for v in peer_udp):
-            pending.append("Peer UDP counters `unavailable` in iroh_pilot builds (Peer pilot lane refuses "
-                           "udp_counters_unavailable; needs Peer-side counters = 0 evidence)")
-            print("PENDING [a42/a43/a44] Peer logs udp_counters=unavailable (Gateway side is 0/0)", flush=True)
+        if any(v.endswith("unavailable") for v in peer_udp):
+            pending.append("peer udp_counters unavailable (iroh/metrics)")
+            print(f"PENDING [{'/'.join(udp_tags)}] Peer logs udp_counters unavailable (stream-peer lacks "
+                  "iroh/metrics); Gateway 0/0 is not enough", flush=True)
+        elif " total=0" not in peer_udp:
+            raise SystemExit("FAIL a4: no Peer-side `udp_counters total=0` line in a42/a43/a44/a45 output")
         else:
-            print("OK Peer UDP datagram counters total=0 under RelayOnly", flush=True)
+            print(f"OK Peer UDP datagram counters total=0 under RelayOnly ({len(peer_udp)} lines)", flush=True)
     for tag, needle in A4_NOROUTE_GREPS:
         if outs.get(tag):
             if needle not in outs[tag]:
@@ -1215,6 +1234,10 @@ def run_a4_pilot():
             if not final:
                 pending.append(f"a44 final marker {A44_FINAL_MARKER} (only A4.4_PEER_EGRESS_PART1_GREEN)")
                 print(f"PENDING a44: a4 needs {A44_FINAL_MARKER}; got PART1 only", flush=True)
+        if tag == "a45" and status == "pass":
+            arch = (_re.findall(r"arch=(\S+)", outs[tag]) or ["?"])[-1]
+            print(f"INFO a45 image arch={arch}; arm64 image NOT required by a4 for now "
+                  "(pending Jeff's `uname -m`)", flush=True)
         if tag == "a46" and status == "pass":
             lane_b = next((l.split("A46_LANE_B=", 1)[1] for l in outs[tag].splitlines() if "A46_LANE_B=" in l), "?")
             print(f"OK a46 green; lane B ({lane_b}) not required", flush=True)

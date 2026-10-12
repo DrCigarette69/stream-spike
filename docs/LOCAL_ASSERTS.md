@@ -357,7 +357,7 @@ python3 scripts/run_local_asserts.py a47     # → A4.7_COPY_FIXTURES_GREEN (ali
 python3 scripts/run_local_asserts.py a45     # → A4.5_PEER_PACKAGE_GREEN (alias peer-package, peer_package)
 ```
 
-- `a45` wraps Peer's `scripts/a45_peer_package_smoke.py` with the shared smoke helper (assumed needs: cargo + `sudo -n` + local docker; strict under `SPIKE_A4=1`). While the script isn't on main it prints `PENDING a45 (...)` and exits 1 under `SPIKE_A4=1` / `SPIKE_IMPL=rust`, else 3.
+- `a45` wraps Peer's `scripts/a45_peer_package_smoke.py` (builds `rust/crates/stream-peer/Dockerfile.pilot`, amd64) with the shared smoke helper: needs `sudo -n` + docker on the **local unix socket** (same `DOCKER_HOST` / `DOCKER_CONTEXT` rules as a40), SKIP without them, FAIL under `SPIKE_A4=1`. If the script were absent it prints `PENDING a45 (...)` (exit 1 under `SPIKE_A4=1` / `SPIKE_IMPL=rust`, else 3).
 
 ## Alpha-4 pilot roll-up (A4.8 / TOM-28)
 
@@ -373,9 +373,10 @@ python3 scripts/run_local_asserts.py _a4_selftest        # offline self-test of 
 
 **Green rule:** `A4_PILOT_GREEN` only if every step passed with no skip and nothing pending. Otherwise `A4_PILOT_NOT_GREEN pending: <list>` and exit 1 under `SPIKE_A4=1` / `SPIKE_IMPL=rust`, else 3. Pending items:
 - `a44` must print the **final** `A4.4_PEER_EGRESS_GREEN`; `A4.4_PEER_EGRESS_PART1_GREEN` alone is pending (the standalone `a44` mode still accepts PART1).
-- `a45` script not on main.
+- `a45` script absent.
 - Any sub-smoke SKIP (missing cargo / sudo / docker without a strict env).
-- Peer UDP counters logged as `udp_counters=unavailable` (see UDP below).
+- `peer udp_counters unavailable (iroh/metrics)`: the Peer logs `udp_counters=unavailable` / `udp_counters_unavailable` (see UDP below).
+- Not required: an arm64 Peer image (a4 prints `INFO a45 image arch=...; arm64 image NOT required`).
 
 **Cross-cutting checks** (each prints an `OK ...` line; the needles live in `A4_REFUSAL_GREPS`, `A4_TIMING_GREPS`, `A4_UDP_ZERO_GREPS`, `A4_NOROUTE_GREPS` in `run_local_asserts.py`):
 
@@ -390,11 +391,12 @@ python3 scripts/run_local_asserts.py _a4_selftest        # offline self-test of 
 | Kill switch ≤ 5 s | a43 `OK flag off -> held stream closed in Ns` and `OK real peer: flag off -> stream closed in Ns`, N ≤ 5; `UX`/P8 `peer offline_reason=egress_off`. Default OFF, `local_off`, `no_state`, non-local switch refused. |
 | Stale flag | a43 `reason=egress_off detail=flag_stale`, `closed after Ns (max age 5 s + 1 s poll)` with N ≤ 6 (5 s max age + 1 s poll); a44 Peer `closed_after_ms` ≤ 5000. |
 | Caps | a43 `stream closed egress_budget_exceeded` + next OPEN 403; a44 `a4_refuse_egress_stream_limit:2`, budget survives restarts, corrupt counter fails closed. Allowlist version mismatch at Gateway and Peer. |
-| UDP 0 under RelayOnly + watcher | Gateway counters `'udp_recv': 0, 'udp_send': 0` on the a42 relay-only line and a44 run A. Peer `udp_counters total=N` must be 0; `udp_counters=unavailable` is **pending**. Watcher trip (a44 run B, a4_local fake-UDP hook): exact `p8_offline.reason_lines.relay_path_required` line from `fixtures/screens.json` on Peer stderr, within 2 s, `not retrying`. |
+| UDP 0 under RelayOnly + watcher | Gateway counters `'udp_recv': 0, 'udp_send': 0` on the a42 relay-only line and a44 `OK no UDP datagrams: gateway iroh_path`. **Gateway 0/0 alone is not enough:** a42/a43/a44/a45 output must carry Peer `udp_counters total=0` lines, none non-zero (FAIL) and none `udp_counters=unavailable` / `udp_counters_unavailable` (pending `peer udp_counters unavailable (iroh/metrics)`); no Peer counter line at all is FAIL. Watcher trip (a44 `OK hook:`, a4_local fake-UDP hook): exact `p8_offline.reason_lines.relay_path_required` line from `fixtures/screens.json` on Peer stderr, within 2 s, `not retrying`, `no redial in`; a44 `A44_PILOT_E2E_OK` (real Peer DATA pump: TLS GET, 300 KB, 3rd stream → `egress_stream_limit`, flag off → held streams closed ≤ 5 s + P8 `egress_off`). |
 | Pinned / sslip never hit DNS | a41 `pilot_pinned_resolve_skips_dns ... ok` (panicking resolver), `pilot_sslip_allowlist_parse ... ok`; a44 `A44_PINNED_OK ... (no DNS)` and `a4_refuse_egress_pin_mismatch:`. |
 | Screen order | a43 real Peer: first `[peer] UX_SCREEN p1_isp_ack` < `p2_consent` < `p9_allowlist` < `[peer] peer iroh_pilot connected`. a42 (egress off): P1/P2 and **no** `p9_allowlist`. |
 | Copy (from fixtures, nothing hardcoded) | Own netns (lo + 10.73.0.200, no default route): pilot Peer (a42's `rust/target/pilot` build) with no ISP ack (never dials); `GET /peer/consent/p1`, `p2`, `p9` → `UX P1` / `UX P2` / `UX P9` blocks on its stderr must contain each screen's `required_copy` and no `forbidden_user_facing_substrings`; `GET /peer/consent/p8` title/body/cta must equal `p8_offline` with its `required_copy` and no raw reason code. a46 output must contain `c2_add_funds_test.required_copy`. a47 checks the Rust mirrors. Banned words: `cargo test -p stream-peer -- ux::` (unchanged). |
+| Pilot Peer image (a45) | `a45: uid 10001, defaults ok, no presets` (non-root, checked with `id -u` in the container); `no a4_local marker SPIKE_A4_FAKE_UDP_DATAGRAMS`; `no insecure_skip_relay_cert_verify` (both `grep -c -a` on the image's binary = 0); `a45: no key/budget file in any image layer`; `/data empty in image`; `on-box relay refused (Pilot lane)`; `a45: --network none up, healthy`. |
 | Stripe | a46 green; lane B status printed, **not required** (also under `SPIKE_A4=1`); secrets scrubbed. |
-| No public egress from the box | a42 `OK a42-gw / a42-relay / a42-peer: no default route (v4/v6)`, a43 `OK no default route in a42-gw/a42-relay/a42-peer/a43-site`, a44 `OK netns has no default route`, UX netns `A4UX_DEFAULT_ROUTE=none`. |
+| No public egress from the box | a42 `OK a42-gw / a42-relay / a42-peer: no default route (v4/v6)`, a43 `OK no default route in a42-gw/a42-relay/a42-peer/a43-site`, a44 `OK netns has no default route`, a45 `a45: --network none up` (container has no network), UX netns `A4UX_DEFAULT_ROUTE=none`. |
 
 Not covered by an a4 grep yet: "no redial after `endpoint_mismatch`" (A3 behaviour, not re-proved on the pilot lane).
