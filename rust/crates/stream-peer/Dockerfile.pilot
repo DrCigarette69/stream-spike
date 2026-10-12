@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+# Pilot Peer image (A4.5). Build context: the rust/ workspace root.
+#   amd64: sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:amd64 rust/
+#   arm64: sudo docker buildx build --platform linux/arm64 --load \
+#            -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:arm64 rust/
+# Always `--features iroh_pilot`, never `a4_local` (on-box lane only).
+# No key, settings or budget file is baked in: everything per-device lives in /data.
+# The builder always runs on $BUILDPLATFORM and cross-compiles for $TARGETARCH; the runtime
+# stage has no RUN step, so an arm64 image builds on an amd64 host without qemu/binfmt.
+ARG RUST_VERSION=1.85
+ARG BUILDPLATFORM=linux/amd64
+FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS builder
+ARG TARGETARCH=amd64
+WORKDIR /build
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) echo x86_64-unknown-linux-gnu > /rust-target ;; \
+      arm64) echo aarch64-unknown-linux-gnu > /rust-target; \
+             apt-get update; \
+             apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross; \
+             rm -rf /var/lib/apt/lists/*; \
+             rustup target add aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH (amd64|arm64)"; exit 1 ;; \
+    esac
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+COPY . .
+RUN set -eu; T=$(cat /rust-target); \
+    cargo build --release --locked -p stream-peer --features iroh_pilot --target "$T"; \
+    mkdir -p /out/data /out/etc/ssl/certs; \
+    cp "target/$T/release/stream-peer" /out/stream-peer; \
+    case "$T" in aarch64-*) aarch64-linux-gnu-strip /out/stream-peer ;; *) strip /out/stream-peer ;; esac; \
+    cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
+    chmod 0700 /out/data
+
+FROM debian:bookworm-slim
+COPY --from=builder /out/etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/stream-peer /usr/local/bin/stream-peer
+COPY --from=builder --chown=10001:10001 /out/data /data
+# mode 0755 comes from git (no --chmod: works with the legacy builder too)
+COPY crates/stream-peer/pilot/peer-admin /usr/local/bin/peer-admin
+ENV SPIKE_TRANSPORT=iroh_pilot \
+    SPIKE_IROH_KEY_PATH=/data/peer_iroh_key \
+    SPIKE_EGRESS_BUDGET_PATH=/data/peer_egress_budget \
+    SPIKE_PEER_ADMIN=127.0.0.1:9200 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    RUST_LOG=warn
+USER 10001:10001
+WORKDIR /data
+VOLUME /data
+# peer-admin = bash /dev/tcp client (no curl), so the runtime stage stays RUN-free (cross-arch safe).
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["/bin/bash", "-c", "peer-admin GET /health | grep -q '\"ok\":true'"]
+ENTRYPOINT ["/usr/local/bin/stream-peer"]

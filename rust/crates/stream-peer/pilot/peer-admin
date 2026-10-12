@@ -1,0 +1,16 @@
+#!/bin/bash
+# peer-admin METHOD PATH [JSON]  -- talk to the Peer status page inside the container
+# (127.0.0.1:9200 unless SPIKE_PEER_ADMIN says otherwise). bash /dev/tcp, no curl needed.
+set -euo pipefail
+m=${1:?usage: peer-admin GET|POST /path [json]}; p=${2:?path}; b=${3:-}
+a=${SPIKE_PEER_ADMIN:-127.0.0.1:9200}; h=${a%:*}; port=${a##*:}
+exec 3<>"/dev/tcp/$h/$port"
+if [[ -n "$b" ]]; then
+  printf '%s %s HTTP/1.0\r\nHost: peer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s' "$m" "$p" "${#b}" "$b" >&3
+else
+  printf '%s %s HTTP/1.0\r\nHost: peer\r\nContent-Length: 0\r\n\r\n' "$m" "$p" >&3
+fi
+resp=$(cat <&3)
+status=$(printf '%s' "$resp" | head -1 | awk '{print $2}')
+printf '%s\n' "${resp#*$'\r\n\r\n'}"
+[[ "$status" =~ ^2 ]]

@@ -199,3 +199,27 @@ E2E: `scripts/a44_pilot_e2e.py` (run by a44) -> `A4.4_PEER_EGRESS_GREEN`.
 
 ## Open / asks
 - Kill-switch reason is `egress_off` everywhere (guard, fixture `reason_lines`, Peer).
+
+## A4.5 pilot image (amd64; arm64 path in the same file)
+
+`rust/crates/stream-peer/Dockerfile.pilot` (compose Dockerfile untouched): builder
+`FROM --platform=$BUILDPLATFORM rust:1.85-bookworm`, `ARG TARGETARCH` (amd64 -> native
+x86_64-unknown-linux-gnu; arm64 -> aarch64-unknown-linux-gnu with gcc-aarch64-linux-gnu +
+`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER`), `cargo build --release --locked -p stream-peer
+--features iroh_pilot` (never `a4_local`). Runtime: debian bookworm-slim with no RUN step (so
+arm64 needs no qemu), CA bundle copied from the builder, uid 10001, `VOLUME /data` (key +
+budget file, nothing baked in), `SPIKE_TRANSPORT=iroh_pilot`, admin 127.0.0.1:9200, no consent
+presets, HEALTHCHECK on `/health` via `peer-admin` (`pilot/peer-admin`: bash /dev/tcp client,
+also the documented admin tool, so no curl in the image).
+`scripts/a45_peer_package_smoke.py` -> `A4.5_PEER_PACKAGE_GREEN`: builds amd64, refuses without
+`SPIKE_RELAY_ALLOW_URL`, on-box relay 10.73.0.254 refused (Pilot lane), `SPIKE_A4_FAKE_UDP_DATAGRAMS`
+and `insecure_skip_relay_cert_verify` absent from the binary, no key/budget in any layer,
+non-root, key 0600 in `/data`, runs healthy with `--network none`, same endpoint id after
+restart. Docker only via `-H unix:///var/run/docker.sock`; refuses if DOCKER_HOST is not unix://.
+arm64: cross-compile of the builder stage verified on this box (`--build-arg TARGETARCH=arm64
+--target builder` -> ELF64 AArch64, no a4_local marker); the full image needs buildx
+(`sudo docker buildx build --platform linux/arm64 --load -f rust/crates/stream-peer/Dockerfile.pilot
+-t peer-pilot:arm64 rust/`), not installed here -> unverified.
+Known gap: until stream-peer's `iroh_pilot` enables `iroh/metrics` (see the counter source gap
+above) the pilot image fails closed after bind (`udp_counters_unavailable`, P8 relay_path_required).
+Install steps for the pilot devices: `docs/PEER_PILOT_INSTALL.md`.
