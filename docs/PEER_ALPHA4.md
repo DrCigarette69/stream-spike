@@ -150,13 +150,13 @@ egress (CLOSE reason `relay_path_required`), kill the transport via the slot (<=
 `a4_refuse_relay_refused:udp_datagrams:<n> (...)` or `:direct_path:<addr>`, P8
 `relay_path_required` once, `left relay path: closed, not retrying`, no redial.
 Logs: `peer iroh_pilot udp_counters ...` after bind, `path ...` at connect, `session_end ...`.
-**Counter source gap:** iroh 0.95.1 only exposes the magicsock counters via `Endpoint::metrics()`
-(iroh feature `metrics`); stream-peer's `iroh_pilot` feature does not turn it on (Gateway's does),
-so the Peer reports `udp_counters=unavailable`. Pilot lane then fails closed after bind
-(`a4_refuse_relay_refused:udp_counters_unavailable`, P8 `relay_path_required`, no dial); a4_local
-lanes go on with conn_type only. Fix (Platform, Cargo.toml only, no lock change):
-`iroh_pilot = ["iroh_local", "iroh/test-utils", "iroh/metrics"]`, then `udp_source()` reads
-`send_ipv4+send_ipv6` / `recv_data_ipv4+recv_data_ipv6` (doc comment in `iroh_pilot_dial.rs`).
+**Counter source:** iroh 0.95.1 only exposes the magicsock counters via `Endpoint::metrics()`
+(iroh feature `metrics`); stream-peer's `iroh_pilot` turns it on (as Gateway's does):
+`iroh_pilot = ["iroh_local", "iroh/test-utils", "iroh/metrics"]` (no lock change).
+`udp_source()` (`MagicsockUdp` in `iroh_pilot_dial.rs`) reads `send_ipv4`/`send_ipv6` /
+`recv_data_ipv4`/`recv_data_ipv6`. If counters were ever unreadable the pilot lane fails closed
+after bind (`a4_refuse_relay_refused:udp_counters_unavailable`, P8 `relay_path_required`, no dial);
+a4_local lanes would go on with conn_type only.
 On-box hook (a4_local builds only; the name is not in pilot binaries):
 `SPIKE_A4_FAKE_UDP_DATAGRAMS=<n>` adds n to the counters.
 Gateway `AUTH_REJECT` / `endpoint_mismatch` is terminal for iroh_pilot as for iroh_local.
@@ -220,6 +220,4 @@ arm64: cross-compile of the builder stage verified on this box (`--build-arg TAR
 --target builder` -> ELF64 AArch64, no a4_local marker); the full image needs buildx
 (`sudo docker buildx build --platform linux/arm64 --load -f rust/crates/stream-peer/Dockerfile.pilot
 -t peer-pilot:arm64 rust/`), not installed here -> unverified.
-Known gap: until stream-peer's `iroh_pilot` enables `iroh/metrics` (see the counter source gap
-above) the pilot image fails closed after bind (`udp_counters_unavailable`, P8 relay_path_required).
 Install steps for the pilot devices: `docs/PEER_PILOT_INSTALL.md`.

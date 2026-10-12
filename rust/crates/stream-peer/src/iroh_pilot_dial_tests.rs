@@ -49,14 +49,16 @@ fn conn_type_mapping() {
 }
 
 #[tokio::test]
-async fn pilot_udp_source_is_unavailable_without_iroh_metrics() {
+async fn pilot_udp_source_reads_iroh_metrics() {
     let a = allow("http://10.73.0.254:3340/", Lane::Local);
     let ep = bind_pilot(SecretKey::from_bytes(&[9u8; 32]), &a, "127.0.0.1:0").await.unwrap();
     let src = udp_source(&ep);
     #[cfg(not(feature = "a4_local"))]
     {
-        assert_eq!(src.read(), None);
-        assert!(require_counters(src.as_ref(), Lane::Pilot).is_err(), "pilot lane fails closed");
+        // iroh/metrics is on under iroh_pilot: a freshly bound relay-only endpoint reads 0, not unavailable.
+        assert_eq!(src.read(), Some(Default::default()));
+        assert!(require_counters(src.as_ref(), Lane::Pilot).is_ok(), "pilot lane has counters");
+        assert_eq!(counters_line(src.as_ref()), "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0");
     }
     let _ = src;
     ep.close().await;

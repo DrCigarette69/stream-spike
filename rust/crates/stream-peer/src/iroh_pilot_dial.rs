@@ -14,7 +14,7 @@ use crate::iroh_key;
 use crate::iroh_local::pre_dial_a4;
 use crate::kill::TransportSlot;
 use crate::offline::{self, CONNECTION_LOST};
-use crate::relay_path::{counters_line, require_counters, retry_after, with_test_hook, UdpCounterSource};
+use crate::relay_path::{counters_line, require_counters, retry_after, with_test_hook, UdpCounterSource, UdpCounts};
 use crate::pilot_target::{check_pilot_target, env_payload, watch_path, PathKind, PilotTarget, RELAY_PATH_REQUIRED};
 use crate::session::{self, SessionEnd};
 use crate::state::{RelayHandle, SharedState};
@@ -73,12 +73,24 @@ pub fn path_kind(ct: &ConnectionType) -> PathKind {
 }
 
 /// Endpoint UDP datagram counters. iroh 0.95.1 exposes them only through
-/// `Endpoint::metrics()` (iroh cargo feature `metrics`), which stream-peer's `iroh_pilot`
-/// feature does not enable yet; until it does this reports `Unavailable` and the pilot lane
-/// refuses to dial (`require_counters`). With `iroh/metrics` on, the source is:
-/// `m = ep.metrics().magicsock`: send = `send_ipv4 + send_ipv6`, recv = `recv_data_ipv4 + recv_data_ipv6`.
-pub fn udp_source(_ep: &Endpoint) -> Box<dyn UdpCounterSource> {
-    with_test_hook(Box::new(crate::relay_path::Unavailable))
+/// `Endpoint::metrics()` (iroh cargo feature `metrics`, enabled by stream-peer's `iroh_pilot`):
+/// `m = ep.metrics().magicsock`: send = `send_ipv4` / `send_ipv6`, recv = `recv_data_ipv4` /
+/// `recv_data_ipv6`. Endpoint-wide since bind, so a relay-only endpoint must read 0.
+pub struct MagicsockUdp(Endpoint);
+impl UdpCounterSource for MagicsockUdp {
+    fn read(&self) -> Option<UdpCounts> {
+        let m = &self.0.metrics().magicsock;
+        Some(UdpCounts {
+            send_v4: m.send_ipv4.get(),
+            send_v6: m.send_ipv6.get(),
+            recv_v4: m.recv_data_ipv4.get(),
+            recv_v6: m.recv_data_ipv6.get(),
+        })
+    }
+}
+
+pub fn udp_source(ep: &Endpoint) -> Box<dyn UdpCounterSource> {
+    with_test_hook(Box::new(MagicsockUdp(ep.clone())))
 }
 
 pub async fn connect(ep: &Endpoint, t: &PilotTarget) -> Result<Connection, String> {
