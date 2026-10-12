@@ -11,9 +11,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Arc;
-use stream_proto::guard::{self, Lane};
+use stream_proto::guard::Lane;
 
-/// Endpoint-wide UDP datagram counts since bind.
+/// Endpoint-wide UDP traffic counters since bind (iroh: bytes, plus inbound UDP disco packets
+/// folded into recv_v4; see `iroh_pilot_dial::MagicsockUdp`). Only zero vs non-zero matters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UdpCounts {
     pub send_v4: u64,
@@ -24,7 +25,7 @@ pub struct UdpCounts {
 
 impl UdpCounts {
     pub fn total(&self) -> u64 {
-        self.send_v4 + self.send_v6 + self.recv_v4 + self.recv_v6
+        self.send_v4.saturating_add(self.send_v6).saturating_add(self.recv_v4).saturating_add(self.recv_v6)
     }
     pub fn log(&self) -> String {
         format!("send_v4={} send_v6={} recv_v4={} recv_v6={}", self.send_v4, self.send_v6, self.recv_v4, self.recv_v6)

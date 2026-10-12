@@ -72,20 +72,35 @@ pub fn path_kind(ct: &ConnectionType) -> PathKind {
     }
 }
 
-/// Endpoint UDP datagram counters. iroh 0.95.1 exposes them only through
-/// `Endpoint::metrics()` (iroh cargo feature `metrics`, enabled by stream-peer's `iroh_pilot`):
-/// `m = ep.metrics().magicsock`: send = `send_ipv4` / `send_ipv6`, recv = `recv_data_ipv4` /
-/// `recv_data_ipv6`. Endpoint-wide since bind, so a relay-only endpoint must read 0.
+/// Endpoint UDP counters. iroh 0.95.1 exposes them only through `Endpoint::metrics()`
+/// (iroh cargo feature `metrics`, enabled by stream-peer's `iroh_pilot`), endpoint-wide since
+/// bind, so a relay-only endpoint must read 0 everywhere:
+///   send = `send_ipv4` / `send_ipv6` (bytes, QUIC + disco over UDP);
+///   recv = `recv_data_ipv4` / `recv_data_ipv6` (bytes, QUIC only) + `recv_disco_udp`
+///   (count of inbound disco packets that arrived over UDP; iroh does not split it by family,
+///   so it is folded into `recv_v4` and the logged line keeps its exact format).
+/// Disco over the relay (`recv_disco_relay`) is not UDP and is not counted.
 pub struct MagicsockUdp(Endpoint);
 impl UdpCounterSource for MagicsockUdp {
     fn read(&self) -> Option<UdpCounts> {
         let m = &self.0.metrics().magicsock;
-        Some(UdpCounts {
-            send_v4: m.send_ipv4.get(),
-            send_v6: m.send_ipv6.get(),
-            recv_v4: m.recv_data_ipv4.get(),
-            recv_v6: m.recv_data_ipv6.get(),
-        })
+        Some(fold_magicsock(
+            m.send_ipv4.get(),
+            m.send_ipv6.get(),
+            m.recv_data_ipv4.get(),
+            m.recv_data_ipv6.get(),
+            m.recv_disco_udp.get(),
+        ))
+    }
+}
+
+/// Pure fold of the magicsock counters (see `MagicsockUdp`); inbound UDP disco -> `recv_v4`.
+pub fn fold_magicsock(send4: u64, send6: u64, recv_data4: u64, recv_data6: u64, recv_disco_udp: u64) -> UdpCounts {
+    UdpCounts {
+        send_v4: send4,
+        send_v6: send6,
+        recv_v4: recv_data4.saturating_add(recv_disco_udp),
+        recv_v6: recv_data6,
     }
 }
 

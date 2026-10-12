@@ -63,3 +63,24 @@ async fn pilot_udp_source_reads_iroh_metrics() {
     let _ = src;
     ep.close().await;
 }
+
+#[test]
+fn inbound_udp_disco_counts_and_trips() {
+    use crate::relay_path::{counters_line, udp_violation, UdpCounterSource, UdpCounts};
+    struct Fixed(UdpCounts);
+    impl UdpCounterSource for Fixed {
+        fn read(&self) -> Option<UdpCounts> {
+            Some(self.0)
+        }
+    }
+    let zero = Fixed(fold_magicsock(0, 0, 0, 0, 0));
+    assert_eq!(counters_line(&zero), "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0");
+    assert!(udp_violation(&zero).is_none());
+    // Only an inbound disco packet over UDP (no QUIC data, nothing sent): still trips.
+    let disco = Fixed(fold_magicsock(0, 0, 0, 0, 1));
+    assert_eq!(counters_line(&disco), "udp_counters total=1 send_v4=0 send_v6=0 recv_v4=1 recv_v6=0");
+    assert!(udp_violation(&disco).unwrap().starts_with("udp_datagrams:1 "), "{:?}", udp_violation(&disco));
+    let both = fold_magicsock(10, 20, 30, 40, 2);
+    assert_eq!((both.send_v4, both.send_v6, both.recv_v4, both.recv_v6, both.total()), (10, 20, 32, 40, 102));
+    assert_eq!(fold_magicsock(0, 0, u64::MAX, 0, 5).recv_v4, u64::MAX, "saturating");
+}

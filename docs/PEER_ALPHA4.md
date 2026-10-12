@@ -154,7 +154,9 @@ Logs: `peer iroh_pilot udp_counters ...` after bind, `path ...` at connect, `ses
 (iroh feature `metrics`); stream-peer's `iroh_pilot` turns it on (as Gateway's does):
 `iroh_pilot = ["iroh_local", "iroh/test-utils", "iroh/metrics"]` (no lock change).
 `udp_source()` (`MagicsockUdp` in `iroh_pilot_dial.rs`) reads `send_ipv4`/`send_ipv6` /
-`recv_data_ipv4`/`recv_data_ipv6`. If counters were ever unreadable the pilot lane fails closed
+`recv_data_ipv4`/`recv_data_ipv6` + `recv_disco_udp` (inbound disco over UDP, not split by
+family, folded into `recv_v4`; the logged line format is unchanged). Values are bytes (+ disco
+packets); only zero vs non-zero matters. If counters were ever unreadable the pilot lane fails closed
 after bind (`a4_refuse_relay_path_required:udp_counters_unavailable`, P8 `relay_path_required`, no dial);
 a4_local lanes would go on with conn_type only.
 On-box hook (a4_local builds only; the name is not in pilot binaries):
