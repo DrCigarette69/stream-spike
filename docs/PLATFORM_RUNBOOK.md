@@ -385,6 +385,23 @@ The real Peer already: accepts `EGRESS_STATE`, sends `CLOSE {stream_id, reason}`
 
 Topology `scripts/a43_netns_up.sh` / `_down.sh` = a42 relay-only topology + `a43-site` (TLS stand-in `scripts/a43_standin_site.py` at 198.51.100.10:443, routable only from `a42-peer`; `/etc/netns/a42-peer/hosts` maps `priv.example.com` → 10.73.0.1). Holds `/tmp/stream-spike-a42.lock`. Phase A uses the test client as the Peer data stand-in (TLS GET + 300 KB sha-checked through Gateway ↔ relay ↔ stand-in ↔ site; off/stale/mismatch/budget closes); phase B the real `stream-peer` (dials the stand-in, `egress_resolved_non_public` and `egress_allowlist_mismatch` refused at the Peer, flag off → closed + P8 `egress_off`). `a42_self_relay_smoke.py` now switches the Gateway on (Control flag + `SPIKE_PUBLIC_EGRESS=1`, allowlist `example.com:443`) so the ticket still reaches the Peer, whose own switch stays off.
 
+**Teardown (no stopped leftovers).** The stale-flag step SIGSTOPs Control inside `a42-relay`. Control runs under `sudo ip netns exec a42-relay sudo -u $USER env … python3 control/main.py`, and both sudo wrappers suspend themselves when their child stops; a stopped root sudo also ignores SIGTERM. The smoke therefore records the whole stopped chain, SIGCONTs child + wrappers right after the step, and its teardown (finally + atexit + SIGINT/SIGTERM/SIGHUP) runs `sudo kill -CONT`, then `-TERM`, then `-KILL` on every process tree it started (outer sudo, inner sudo, netns child). It then prints `A43_TEARDOWN stopped=0` and fails if any process from the run is still in state T. Check by hand: `ps -eo stat,lstart,cmd | grep '[a]42-relay'` should show no `T` rows.
+
+## Docker on the shared box
+
+- **Install:** Debian `docker.io` 26.1.5 + `docker-compose` 2.26.1, installed with `apt-get install --no-install-recommends` (no containerd/BuildKit extras; no `buildx`, so no multi-arch images here).
+- **No systemd:** `dockerd` is not a service. Check first, start only if it's not running:
+
+  ```bash
+  pgrep -a dockerd || sudo sh -c 'nohup setsid dockerd --group box >>/var/log/dockerd.log 2>&1 &'
+  docker info --format '{{.ServerVersion}}'   # -> 26.1.5
+  ```
+
+  To restart: stop the running `dockerd` (check `pgrep -a dockerd` that it's the one we started), then run the same start line. Logs: `/var/log/dockerd.log`.
+- **Not persistent:** the daemon (and the install itself) does not survive a box reboot or image rebuild. Re-check `pgrep -a dockerd` / `docker --version` before any Docker step (a40, a45, compose).
+- **Socket:** only the local unix socket `/var/run/docker.sock` (group `box`). Keep `DOCKER_HOST` unset or `unix://…`; the a45 package smoke refuses anything else.
+- **Never use the unauthenticated TCP endpoint on `:2375`.** It is not ours and is not part of this stack. Don't point `DOCKER_HOST`, compose, or scripts at it, and don't probe it.
+
 ## A4.6 Stripe test-mode top-up (TOM-26)
 
 - **Key:** env `STRIPE_TEST_SECRET_KEY` only (never in files, images, logs, or responses). At start Control runs `spike_private_guard.check_stripe_test_key`: anything but `sk_test_…`/`rk_test_…` → `control refused: a4_refuse_stripe_live_key_refused:<prefix>` (exit 2, prefix only). Set → log line `control stripe: test mode (key set, value not shown)`. **Unset → `/v1/topup/test` answers `409 stripe_test_unavailable` with `fallback: /v1/mock/topup`; the A1.3 mock (`c2_add_funds_mock`) is unchanged either way.**

@@ -29,10 +29,12 @@ Holds /tmp/stream-spike-a42.lock (same a42-* netns names as the a42 smoke).
 """
 from __future__ import annotations
 
+import atexit
 import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -204,6 +206,131 @@ def drain(p, wait=0.5):
     return out
 
 
+# --- teardown: never leave stopped (T) processes behind -------------------------------------------
+# The stale-flag test SIGSTOPs Control inside a42-relay. Control runs under
+# `sudo ip netns exec a42-relay sudo -u $USER env ... python3 control/main.py`; when the python child
+# stops, each sudo wrapper above it suspends itself too (sudo job-control relay) and SIGCONT to the
+# python alone does not wake them. A stopped root sudo also ignores SIGTERM until continued, so the
+# old teardown (Popen.terminate on the outer sudo) left one stopped wrapper + zombie per run.
+# Fix: every Proc tree we start is CONT -> TERM -> KILL'd via sudo in a finally/atexit/signal path,
+# and teardown asserts no process from this run is still stopped (A43_TEARDOWN stopped=0).
+_SEEN: set[int] = set()      # every pid that belonged to one of our Proc trees
+_STOPPED: set[int] = set()   # pids we SIGSTOPped (plus their sudo ancestors)
+_TORN_DOWN = False
+
+
+def _ps_table():
+    """pid -> (ppid, state) for every live process (from /proc/<pid>/stat)."""
+    tab = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            st = (d / "stat").read_text()
+        except OSError:
+            continue
+        rest = st[st.rfind(")") + 2:].split()
+        tab[int(d.name)] = (int(rest[1]), rest[0])
+    return tab
+
+
+def _tree(root, tab=None):
+    """root + all descendants (pids), parents first."""
+    tab = tab if tab is not None else _ps_table()
+    kids: dict[int, list[int]] = {}
+    for pid, (ppid, _) in tab.items():
+        kids.setdefault(ppid, []).append(pid)
+    out, todo = [], [root]
+    while todo:
+        pid = todo.pop(0)
+        if pid in tab and pid not in out:
+            out.append(pid)
+            todo.extend(kids.get(pid, []))
+    return out
+
+
+def _ancestors(pid, stop_at, tab):
+    """pid's ancestor chain up to and including one of stop_at (empty if not under stop_at)."""
+    chain = []
+    while pid in tab and pid > 1:
+        chain.append(pid)
+        if pid in stop_at:
+            return chain
+        pid = tab[pid][0]
+    return []
+
+
+def _sudo_kill(sig, pids):
+    if pids:
+        subprocess.run(["sudo", "-n", "kill", f"-{sig}", *map(str, pids)], capture_output=True)
+
+
+def freeze(pid):
+    """SIGSTOP pid and remember its whole sudo chain so thaw()/teardown can resume it."""
+    tab = _ps_table()
+    roots = {p.pid for p in a42.procs}
+    chain = _ancestors(pid, roots, tab) or [pid]
+    _STOPPED.update(chain)
+    _SEEN.update(chain)
+    subprocess.run(["sudo", "-n", "kill", "-STOP", str(pid)], check=True)
+
+
+def thaw(pid):
+    """SIGCONT pid and every sudo wrapper above it (they suspend themselves when the child stops)."""
+    chain = _ancestors(pid, {p.pid for p in a42.procs}, _ps_table()) or [pid]
+    targets = list(dict.fromkeys([*chain, *_STOPPED]))  # child first, outer sudo last
+    for _ in range(10):
+        _sudo_kill("CONT", targets)
+        time.sleep(0.2)
+        tab = _ps_table()
+        if not any(q in tab and tab[q][1] in ("T", "t") for q in targets):
+            return
+
+
+def teardown(final=True):
+    """CONT -> TERM -> KILL every process tree we started (sudo wrappers + netns child), then assert
+    nothing from this run is left stopped. Idempotent; runs from finally, atexit and SIGINT/SIGTERM."""
+    global _TORN_DOWN
+    if _TORN_DOWN:
+        return 0
+    _TORN_DOWN = True
+    tab = _ps_table()
+    pids: list[int] = []
+    for p in a42.procs:
+        for q in _tree(p.pid, tab):
+            if q not in pids:
+                pids.append(q)
+    pids += [q for q in _STOPPED if q in tab and q not in pids]
+    _SEEN.update(pids)
+    _sudo_kill("CONT", pids)
+    _sudo_kill("TERM", list(reversed(pids)))
+    end = time.time() + 4
+    while time.time() < end:
+        live = [q for q in pids if q in _ps_table() and _ps_table()[q][1] != "Z"]
+        if not live:
+            break
+        time.sleep(0.2)
+    tab = _ps_table()
+    live = [q for q in pids if q in tab and tab[q][1] != "Z"]
+    if live:
+        _sudo_kill("CONT", live)
+        _sudo_kill("KILL", live)
+    for p in a42.procs:
+        try:
+            p.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            pass
+    time.sleep(0.3)
+    tab = _ps_table()
+    stopped = sorted(q for q in _SEEN if q in tab and tab[q][1] in ("T", "t"))
+    print(f"A43_TEARDOWN stopped={len(stopped)}" + (f" pids={stopped}" if stopped else ""), flush=True)
+    return len(stopped)
+
+
+def _on_signal(signum, _frame):
+    raise SystemExit(128 + signum)  # unwinds through main()'s finally -> teardown()
+
+
 def main() -> int:
     lockf = open("/tmp/stream-spike-a42.lock", "w")
     try:
@@ -216,19 +343,22 @@ def main() -> int:
                               ("stream-relay", "server,a4_local", []), ("stream-peer", "iroh_pilot,a4_local", [])):
         a42.run([cargo, "build", "--locked", "-q", "--target-dir", tgt, "-p", pkg, "--features", feats, *extra], cwd=RUST)
     subprocess.run(["bash", ROOT / "scripts" / "a43_netns_down.sh"], capture_output=True)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _on_signal)
+    atexit.register(teardown)
     a42.run(["bash", ROOT / "scripts" / "a43_netns_up.sh"])
+    rc = 1
     try:
-        return body()
+        rc = body()
     finally:
-        for p in a42.procs:
-            try:
-                p.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+        left = teardown()
         subprocess.run(["bash", ROOT / "scripts" / "a43_netns_down.sh"], capture_output=True)
         for d in Path(tempfile.gettempdir()).glob("a4[23]_*"):
             if d.is_dir() and d.owner() == a42.USER:
                 shutil.rmtree(d, ignore_errors=True)
+    if left:
+        fail(f"teardown left {left} stopped process(es) from this run")
+    return rc
 
 
 def body() -> int:
@@ -377,13 +507,17 @@ def body() -> int:
     wait_effective(True)
     sid, t = held("stale")
     cpid = ns_pid("a42-relay", "control/main.py")
-    subprocess.run(["sudo", "-n", "kill", "-STOP", str(cpid)], check=True)
+    freeze(cpid)
     t0 = time.time()
     try:
         eof = t.expect("HOLD_EOF", timeout=12)
         rc = cli.expect(f"RX_CLOSE {sid} reason=egress_off detail=flag_stale", timeout=3)
     finally:
-        subprocess.run(["sudo", "-n", "kill", "-CONT", str(cpid)], check=True)
+        thaw(cpid)
+    tab = _ps_table()
+    still = [q for q in _STOPPED if q in tab and tab[q][1] in ("T", "t")]
+    if still:
+        fail(f"Control chain still stopped after SIGCONT: {still}")
     dt = float(eof.split("t=")[1]) - t0
     if dt > 5.0 + 1.5:
         fail(f"stale took {dt:.2f}s")

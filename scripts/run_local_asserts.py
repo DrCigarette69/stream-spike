@@ -813,6 +813,7 @@ A4_REFUSAL_GREPS = (
      "allowlisted name -> private IP refused at the real Peer (egress_resolved_non_public)"),
     ("a43", "OK real peer with a different allowlist -> refused at the peer: egress_allowlist_mismatch", "allowlist mismatch at the real Peer"),
     ("a43", "P8 peer offline_reason=egress_off", "kill switch off -> Peer P8 egress_off"),
+    ("a43", "A43_TEARDOWN stopped=0", "teardown: Control SIGSTOP chain resumed + killed, no stopped (T) leftovers"),
     # Peer egress (A4.4)
     ("a44", "a4_refuse_egress_not_allowlisted:site1.pilot.example:80", "off-allowlist dest refused AT THE PEER (egress_not_allowlisted)"),
     ("a44", "a4_refuse_egress_resolved_non_public:site2.pilot.example->169.254.169.254", "metadata IP via allowlisted name refused at the Peer"),
