@@ -93,7 +93,7 @@ async fn conn_type_direct_is_secondary_signal() {
 
 #[test]
 fn pilot_fails_closed_without_counters() {
-    assert!(require_counters(&Unavailable, Lane::Pilot).unwrap_err().ends_with("udp_counters_unavailable"));
+    assert_eq!(require_counters(&Unavailable, Lane::Pilot).unwrap_err(), "a4_refuse_relay_path_required:udp_counters_unavailable");
     assert!(require_counters(&Unavailable, Lane::Local).is_ok());
     assert!(require_counters(&FakeUdp::new(0), Lane::Pilot).is_ok());
 }

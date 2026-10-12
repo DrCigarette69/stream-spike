@@ -115,7 +115,7 @@ pub enum PathKind {
 /// Poll every `WATCH_INTERVAL` until the path leaves the relay: primary = any non-zero
 /// UDP datagram count from `udp` (send+recv, v4+v6); secondary = `get` reporting a
 /// Direct / Mixed `conn_type`. Then close all pilot egress, kill the transport (<= 2 s),
-/// log `a4_refuse_relay_refused:<detail>` and show P8 `relay_path_required` once.
+/// log `a4_refuse_relay_path_required:<detail>` (same reason as the P8 screen) and show P8 `relay_path_required` once.
 /// Returns the detail. Runs until `stop` resolves otherwise (then `None`).
 pub async fn watch_path<G, S>(
     state: &SharedState,
@@ -135,7 +135,7 @@ where
             _ => None,
         });
         if let Some(detail) = hit {
-            eprintln!("a4_refuse_{}:{detail}", guard::REASON_RELAY_REFUSED);
+            eprintln!("a4_refuse_{RELAY_PATH_REQUIRED}:{detail}");
             if let Some(p) = state.read().await.egress.clone() {
                 p.lock().unwrap().close_all(RELAY_PATH_REQUIRED);
             }

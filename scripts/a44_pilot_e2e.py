@@ -9,10 +9,13 @@ relay) + a43-site, the TLS stand-in 198.51.100.10:443 only the Peer ns routes to
 a42/a43 smoke helpers (same /tmp/stream-spike-a42.lock, waits for it).
   1. switch on; TLS 1.3 GET /hello (38 B) and /big 300 KB through Gateway pipe -> relay -> Peer
      DATA pump -> pinned 198.51.100.10 and back, sha256 match; Peer CLOSE site_closed
-  2. Gateway endpoint UDP datagram counters stay 0; Peer logs its counter line
+  2. Gateway and Peer endpoint UDP counters (iroh metrics, send+recv, v4+v6) stay 0;
+     the Peer reporting `udp_counters=unavailable` is a FAIL
   3. two held streams + a 3rd refused (egress_stream_limit); flag off -> both closed <= 5 s,
      Peer P8 egress_off
-  4. Peer restart (SIGTERM) keeps bytes_today (persistent budget)
+  4. Peer restart (SIGTERM) keeps bytes_today (persistent budget); a Control ticket for key A
+     sent to the Peer restarted on key B -> `peer iroh_pilot AUTH_REJECT endpoint_mismatch:
+     closed, not retrying`, one connect, no redial for >= 4 s
   5. a4_local hook SPIKE_A4_FAKE_UDP_DATAGRAMS=1 -> exact P8 relay_path_required line <= 2 s,
      `not retrying`, no redial
 Prints A44_PILOT_E2E_OK.
@@ -27,6 +30,10 @@ import a43_gateway_egress_smoke as G  # noqa: E402
 P8_RELAY = next(c for c in json.load(open(A.ROOT / "fixtures" / "screens.json"))["consent"]
                 if "reason_lines" in c)["reason_lines"]["relay_path_required"]
 PEER_ADMIN = "http://127.0.0.1:9200"
+# Real Peer endpoint counters (iroh/metrics, c219b65): all four must be 0; `unavailable` FAILs.
+MISMATCH_LINE = "peer iroh_pilot AUTH_REJECT endpoint_mismatch: closed, not retrying"
+TRIP_LINE = "a4_refuse_relay_path_required:udp_datagrams:1"
+UDP_ZERO = "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0"
 
 
 def fail(msg):
@@ -98,13 +105,21 @@ def body(tmp: Path):
         b = p.expect("iroh_pilot bound", timeout=40)
         if "quic=none" not in b:
             fail(f"relay map QAD not off: {b}")
+        c = p.expect("peer iroh_pilot udp_counters", timeout=5)
+        if UDP_ZERO not in c:
+            fail(f"{name}: Peer UDP counters after bind not all 0 / unavailable: {c.strip()}")
         p.expect("iroh_pilot connected", timeout=60)
         return p, p.expect("peer iroh_pilot path ", timeout=5)
 
+    def peer_udp_zero(p, label):
+        bad = [l for l in p.lines if "udp_counters" in l and UDP_ZERO not in l]
+        if bad:
+            fail(f"{label}: Peer UDP counters not 0: {bad}")
+
     # 1. TLS through the DATA pump
     peer, path = real_peer("peer")
-    if not ("udp_counters total=0 " in path or "udp_counters=unavailable" in path):
-        fail(f"peer UDP counters at connect: {path}")
+    if UDP_ZERO not in path:
+        fail(f"peer UDP counters at connect not all 0 (or unavailable): {path.strip()}")
     st, r, sid = G.start("peer_a44", "echo.example.com")
     if st != 200 or not r.get("pipe_addr"):
         fail(f"/gw/start {st} {r}")
@@ -125,6 +140,7 @@ def body(tmp: Path):
 
     # 2. UDP counters
     ip = gw_udp("after transfers")
+    peer_udp_zero(peer, "after transfers")
     ok(f"no UDP datagrams: gateway iroh_path {ip}; peer {path.split('path ', 1)[1].strip()}")
 
     # 3. stream cap + flag off
@@ -154,6 +170,7 @@ def body(tmp: Path):
     G.wait_effective(True)
 
     # 4. restart keeps budget
+    peer_udp_zero(peer, "after flag off")
     b1 = peer_egress().get("bytes_today", 0)
     if b1 < 300000:
         fail(f"bytes_today {b1} < 300 KB after the transfers")
@@ -165,14 +182,36 @@ def body(tmp: Path):
     if b2 != b1 or oct(budget.stat().st_mode & 0o777) != "0o600":
         fail(f"budget after restart {b2} != {b1} (mode {oct(budget.stat().st_mode & 0o777)})")
     ok(f"Peer restart (SIGTERM, flushed) keeps bytes_today={b2} (file 0600)")
+    # 4b. endpoint_mismatch: Control mints a ticket bound to key A (this Peer), the Peer
+    #     restarts on key B, the Gateway gets the key-A ticket -> AUTH_REJECT endpoint_mismatch.
+    old = G.session("peer_a44")
+    id_a = old["ticket"]["payload"]["peer_endpoint_id"]
     stop_peer(peer)
+    peer_udp_zero(peer, "restarted Peer")
+    pb, _ = real_peer("peer-keyB", {"SPIKE_IROH_KEY_PATH": str(tmp / "peer_b.key")})
+    id_b = next(l for l in pb.lines if "iroh_endpoint_id=" in l).split("=", 1)[1].strip()
+    if id_b == id_a:
+        fail("key B has the same endpoint id as key A")
+    st, r = A.ns_http("a42-gw", "POST", A.GW_HTTP + "/gw/start", {"peer_id": "peer_a44", "stream_id": old["stream_id"],
+                      "ticket_json": old["ticket_json"], "dest_host": "echo.example.com", "dest_port": 443})
+    rej = pb.expect(MISMATCH_LINE, timeout=10)
+    t_rej = time.time()
+    pb.expect("offline_reason=endpoint_mismatch", timeout=3)
+    G.drain(pb, max(0.0, 4.5 - (time.time() - t_rej)))
+    conns = sum("iroh_pilot connected" in l for l in pb.lines)
+    if conns != 1 or sum(MISMATCH_LINE in l for l in pb.lines) != 1 or st == 200:
+        fail(f"endpoint_mismatch: /gw/start {st} {r}; connects={conns}; {pb.lines[-8:]}")
+    peer_udp_zero(pb, "key-B Peer")
+    ok(f"ticket for key A ({id_a[:12]}…) -> Peer on key B ({id_b[:12]}…): /gw/start {st} {r.get('error')}; "
+       f"'{rej.strip()}'; one connect, no redial in {time.time() - t_rej:.1f} s")
+    stop_peer(pb)
 
     # 5. fake UDP datagram -> trip once, no retry
     c = A.Proc("a42-peer", [A.PEER], {**pe, "SPIKE_A4_FAKE_UDP_DATAGRAMS": "1"}, "peer-fake")
     c.expect("SPIKE_A4_FAKE_UDP_DATAGRAMS=1", timeout=30)
     c.expect("iroh_pilot connected", timeout=60)
     t0 = time.time()
-    trip = c.expect("a4_refuse_relay_refused:udp_datagrams:1", timeout=2)
+    trip = c.expect(TRIP_LINE, timeout=2)
     c.expect(P8_RELAY, timeout=max(0.1, 2 - (time.time() - t0)))
     dt = time.time() - t0
     nr = c.expect("not retrying", timeout=3)

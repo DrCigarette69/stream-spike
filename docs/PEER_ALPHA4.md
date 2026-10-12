@@ -147,7 +147,7 @@ Relay-path watcher (`relay_path.rs` + `pilot_target::watch_path`, every 100 ms):
 ANY non-zero endpoint UDP datagram count (send+recv, v4+v6; trait `UdpCounterSource`), secondary
 = `conn_type` Direct/Mixed (iroh 0.95.1 keeps it `None` under RelayOnly). Trip -> close all pilot
 egress (CLOSE reason `relay_path_required`), kill the transport via the slot (<= 2 s),
-`a4_refuse_relay_refused:udp_datagrams:<n> (...)` or `:direct_path:<addr>`, P8
+`a4_refuse_relay_path_required:udp_datagrams:<n> (...)` or `:direct_path:<addr>` (same reason as P8), P8
 `relay_path_required` once, `left relay path: closed, not retrying`, no redial.
 Logs: `peer iroh_pilot udp_counters ...` after bind, `path ...` at connect, `session_end ...`.
 **Counter source:** iroh 0.95.1 only exposes the magicsock counters via `Endpoint::metrics()`
@@ -155,11 +155,13 @@ Logs: `peer iroh_pilot udp_counters ...` after bind, `path ...` at connect, `ses
 `iroh_pilot = ["iroh_local", "iroh/test-utils", "iroh/metrics"]` (no lock change).
 `udp_source()` (`MagicsockUdp` in `iroh_pilot_dial.rs`) reads `send_ipv4`/`send_ipv6` /
 `recv_data_ipv4`/`recv_data_ipv6`. If counters were ever unreadable the pilot lane fails closed
-after bind (`a4_refuse_relay_refused:udp_counters_unavailable`, P8 `relay_path_required`, no dial);
+after bind (`a4_refuse_relay_path_required:udp_counters_unavailable`, P8 `relay_path_required`, no dial);
 a4_local lanes would go on with conn_type only.
 On-box hook (a4_local builds only; the name is not in pilot binaries):
 `SPIKE_A4_FAKE_UDP_DATAGRAMS=<n>` adds n to the counters.
-Gateway `AUTH_REJECT` / `endpoint_mismatch` is terminal for iroh_pilot as for iroh_local.
+Gateway `AUTH_REJECT` / `endpoint_mismatch` is terminal for iroh_pilot as for iroh_local:
+`peer iroh_pilot AUTH_REJECT endpoint_mismatch: closed, not retrying`, P8 `endpoint_mismatch`, no
+redial (a44: Control ticket for key A sent to the Peer restarted on key B).
 A pilot egress P8 (`egress_*`) is not replaced by a later generic `connection_lost`.
 
 Relay-path e2e (now part of `scripts/a44_pilot_e2e.py`, run by a44; A4.2 topology, relay
@@ -215,7 +217,8 @@ also the documented admin tool, so no curl in the image).
 `SPIKE_RELAY_ALLOW_URL`, on-box relay 10.73.0.254 refused (Pilot lane), `SPIKE_A4_FAKE_UDP_DATAGRAMS`
 and `insecure_skip_relay_cert_verify` absent from the binary, no key/budget in any layer,
 non-root, key 0600 in `/data`, runs healthy with `--network none`, same endpoint id after
-restart. Docker only via `-H unix:///var/run/docker.sock`; refuses if DOCKER_HOST is not unix://.
+restart. Metrics check: the image logs `udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0
+recv_v6=0` after bind and never `udp_counters_unavailable`. Docker only via `-H unix:///var/run/docker.sock`; refuses if DOCKER_HOST is not unix://.
 arm64: cross-compile of the builder stage verified on this box (`--build-arg TARGETARCH=arm64
 --target builder` -> ELF64 AArch64, no a4_local marker); the full image needs buildx
 (`sudo docker buildx build --platform linux/arm64 --load -f rust/crates/stream-peer/Dockerfile.pilot

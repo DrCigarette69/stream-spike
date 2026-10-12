@@ -6,6 +6,8 @@ the image (amd64 only for now):
   * runs as uid 10001; defaults SPIKE_TRANSPORT=iroh_pilot, key + budget in /data,
     admin 127.0.0.1:9200; no consent presets baked in (user goes through P1/P2/P9)
   * iroh_pilot behavior: refuses start without SPIKE_RELAY_ALLOW_URL (a4_refuse_relay_config)
+  * iroh metrics on: the Peer logs `udp_counters total=0 ...` (all four 0) after bind and never
+    `udp_counters_unavailable`
   * no a4_local lane: the on-box relay 10.73.0.254 is refused (Lane is one cfg in stream-proto,
     so this also covers the TEST-NET-2 exceptions), and the a4_local-only marker string
     `SPIKE_A4_FAKE_UDP_DATAGRAMS` is absent from the binary; no `insecure_skip_relay_cert_verify`
@@ -178,8 +180,17 @@ def main():
         h = json.loads(d("exec", NAME, "peer-admin", "GET", "/health").stdout)
         if not h.get("ok") or h.get("transport") != "iroh_pilot" or h.get("ux_screen") != "P1" or h.get("online"):
             fail(f"/health unexpected: ok={h.get('ok')} transport={h.get('transport')} screen={h.get('ux_screen')} online={h.get('online')}")
-        udp = wait_log(r"peer (iroh_pilot udp_counters[^\n]*|A4 iroh_pilot refused: a4_refuse_relay_refused:udp_counters_unavailable)")
-        print(f"a45: counter line: {udp[0] if udp else '<none>'}", flush=True)
+        # Metrics on in the pilot binary (iroh/metrics, c219b65): after bind the Peer logs real
+        # endpoint UDP counters, all 0 (relay-only, --network none), never `unavailable`.
+        udp = wait_log(r"peer iroh_pilot (udp_counters[^\n]*)")
+        time.sleep(2)
+        logs = d("logs", NAME, check=False)
+        alll = logs.stdout + logs.stderr
+        if not udp or udp[0].strip() != "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0":
+            fail(f"pilot binary UDP counter line = {udp[:1]} (want all four 0 from iroh metrics)")
+        if "udp_counters_unavailable" in alll or "udp_counters=unavailable" in alll or "relay_path_required" in alll:
+            fail("pilot binary reports udp_counters unavailable / relay_path_required:\n" + alll[-600:])
+        print(f"a45: iroh metrics on: '{udp[0].strip()}', no udp_counters_unavailable", flush=True)
         k = d("exec", NAME, "peer-admin", "POST", "/peer/kill", check=False)
         hk = json.loads(d("exec", NAME, "peer-admin", "GET", "/health").stdout)
         if k.returncode != 0 or not hk.get("kill_requested"):

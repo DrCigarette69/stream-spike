@@ -107,7 +107,7 @@ pub fn offset(inner: Box<dyn UdpCounterSource>, extra: u64) -> Box<dyn UdpCounte
     Box::new(Offset { inner, extra })
 }
 
-/// Detail for `a4_refuse_relay_refused:<detail>` when the counters show UDP traffic.
+/// Detail for `a4_refuse_relay_path_required:<detail>` when the counters show UDP traffic.
 pub fn udp_violation(src: &dyn UdpCounterSource) -> Option<String> {
     src.read().filter(|c| c.total() > 0).map(|c| format!("udp_datagrams:{} ({})", c.total(), c.log()))
 }
@@ -117,7 +117,7 @@ pub fn udp_violation(src: &dyn UdpCounterSource) -> Option<String> {
 pub fn require_counters(src: &dyn UdpCounterSource, lane: Lane) -> Result<(), String> {
     match (src.read(), lane) {
         (Some(_), _) | (None, Lane::Local) => Ok(()),
-        (None, Lane::Pilot) => Err(format!("a4_refuse_{}:udp_counters_unavailable", guard::REASON_RELAY_REFUSED)),
+        (None, Lane::Pilot) => Err(format!("a4_refuse_{}:udp_counters_unavailable", crate::pilot_target::RELAY_PATH_REQUIRED)),
     }
 }
 

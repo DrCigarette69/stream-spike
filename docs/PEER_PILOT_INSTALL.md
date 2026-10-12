@@ -28,11 +28,6 @@ sudo docker save peer-pilot:arm64 | gzip > peer-pilot-arm64.tar.gz
 Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`.
 Compare `sudo docker image inspect -f '{{.Id}}' peer-pilot:amd64` with the ID you were given.
 
-**Known limitation of this build:** the device checks that its connection only ever goes
-through the relay. This build cannot read that check's counters yet, so it stops before
-connecting (`/peer/screen/p8` explains why). Everything below (settings, screens, status,
-pause) works; sharing starts with the next image.
-
 ## 2. Settings file
 
 Create `/etc/peer-pilot.env` (mode 0600). Fill in the values you were sent; leave the last
