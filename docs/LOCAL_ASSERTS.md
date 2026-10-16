@@ -382,9 +382,11 @@ python3 scripts/run_local_asserts.py _a4_selftest        # offline self-test of 
   - Every `session_end` must carry `end_reason=` and `closed_by=local|remote`; a missing field FAILs. If **no** `session_end` line has `end_reason=`, the result is PENDING `peer image predates fa935fa` instead (approved image `2452f56d`).
   - Every `connected gateway=` that follows a `session_end` needs a `redial attempt=` line in between; an immediate redial FAILs.
   - `redial_in_ms` must be ≥ `SPIKE_REDIAL_BASE_MS`/2 (default 1000).
-  - `attempt=` must not go down within a process. A reset is allowed only if the previous `session_end` carries `up_ms=`/`up_secs=` ≥ `SPIKE_REDIAL_RESET_SECS` (default 60). Today's logs have no timing, so they must simply not go down.
+  - `attempt=` must not go down within a process. The one allowed drop: the redial line has `reset=1`, `attempt=1`, and the previous `session_end` has `up_ms=` ≥ `SPIKE_REDIAL_RESET_SECS`×1000 (default 60000). `reset=1` with a short or missing `up_ms`, or with `attempt≠1`, FAILs. So does a drop without `reset=1`.
+  - Formats (Peer `75ec884`): `session_end end_reason=<r> closed_by=local|remote [close_code=N close_reason=<t> | close_error=<t>] up_ms=<ms> udp_counters …` and `redial attempt=<N> redial_in_ms=<ms>[ reset=1] after=<end_reason>`.
+  - If `end_reason=` is present but no `session_end` line has `up_ms=`, the result is PENDING `peer image predates 75ec884`.
   - No redial is allowed after `end_reason=kill|force_disconnect|cleared_ack|consent_withdrawn`.
-  - Each run prints `OK a4 reconnect contract: session_end=N (with end_reason=N) redial=N reconnect=N floor_ms=N`.
+  - Each run prints `OK a4 reconnect contract: session_end=N (with end_reason=N) (with up_ms=N) redial=N reset=N reconnect=N floor_ms=N`.
 
 **Cross-cutting checks** (each prints an `OK ...` line; the needles live in `A4_REFUSAL_GREPS`, `A4_TIMING_GREPS`, `A4_UDP_ZERO_GREPS`, `A4_NOROUTE_GREPS` in `run_local_asserts.py`):
 
