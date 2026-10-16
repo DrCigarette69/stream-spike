@@ -777,6 +777,27 @@ def run_a3_iroh_local():
 # SPIKE_A4=1 / SPIKE_IMPL=rust, else 3). A failing check is FAIL (exit 1) immediately.
 import re as _re  # noqa: E402
 
+
+def _norm_image_id(v):
+    v = (v or "").strip().lower()
+    return v[len("sha256:"):] if v.startswith("sha256:") else v
+
+
+def a45_image_id_check(out, want=None):
+    """a4 roll-up check on a45 output. Returns (ok, msg). `want` = SPIKE_PEER_IMAGE_ID.
+    A45_IMAGE_CONFIG_ID also counts (Docker 29+ containerd store shows the manifest digest)."""
+    ids = _re.findall(r"^A45_IMAGE_ID=(\S+)\s*$", out or "", _re.M)
+    cfg = _re.findall(r"^A45_IMAGE_CONFIG_ID=(\S+)\s*$", out or "", _re.M)
+    want = (want or "").strip()
+    if want:
+        if not ids:
+            return False, f"FAIL a4: SPIKE_PEER_IMAGE_ID={want} set but a45 printed no A45_IMAGE_ID line"
+        got = {_norm_image_id(x) for x in ids + cfg}
+        if _norm_image_id(want) not in got:
+            return False, f"FAIL a4: a45 A45_IMAGE_ID={ids[-1]} != SPIKE_PEER_IMAGE_ID={want}"
+        return True, f"OK a45 image id {ids[-1]} == SPIKE_PEER_IMAGE_ID"
+    return True, f"INFO a45 image id {ids[-1] if ids else '?'}"
+
 A44_FINAL_MARKER = "A4.4_PEER_EGRESS_GREEN"
 PEER_UDP_ZERO_LINE = "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0"
 INSECURE_CALL_RE = _re.compile(r"insecure_skip_relay_cert_verify\s*\(")
@@ -1242,6 +1263,11 @@ def run_a4_pilot():
                 pending.append(f"a44 final marker {A44_FINAL_MARKER} (only A4.4_PEER_EGRESS_PART1_GREEN)")
                 print(f"PENDING a44: a4 needs {A44_FINAL_MARKER}; got PART1 only", flush=True)
         # a45: pilot devices are x86_64, so amd64 is the only shipped peer-pilot image.
+        if tag == "a45" and status == "pass":
+            ok, msg = a45_image_id_check(outs[tag], os.environ.get("SPIKE_PEER_IMAGE_ID"))
+            if not ok:
+                raise SystemExit(msg)
+            print(msg, flush=True)
         if tag == "a46" and status == "pass":
             lane_b = next((l.split("A46_LANE_B=", 1)[1] for l in outs[tag].splitlines() if "A46_LANE_B=" in l), "?")
             print(f"OK a46 green; lane B ({lane_b}) not required", flush=True)
