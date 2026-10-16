@@ -1052,9 +1052,10 @@ def a4_check_evidence(outs, pending):
             raise SystemExit(f"FAIL a4: {tag} gateway UDP counters not 0 under RelayOnly: {hit[:1]}")
         print(f"OK [{tag}] gateway UDP datagram counters 0/0 under RelayOnly", flush=True)
     # Peer side must log real counters (`udp_counters total=0 ...`); Gateway 0/0 alone isn't enough.
+    # `(?<!no )`: a45's evidence line says "no udp_counters_unavailable"; that is not a Peer unavailable line.
     # a44 run B's deliberate watcher trip (fake UDP hook) is a refusal line, not a counter line.
     udp_tags = [t for t in ("a42", "a43", "a44", "a45") if outs.get(t)]
-    peer_udp = [m for t in udp_tags for m in _re.findall(r"udp_counters(=unavailable|_unavailable| total=\d+)", outs[t])]
+    peer_udp = [m for t in udp_tags for m in _re.findall(r"(?<!no )udp_counters(=unavailable|_unavailable| total=\d+)", outs[t])]
     if udp_tags:
         if any(v.startswith(" total=") and v != " total=0" for v in peer_udp):
             raise SystemExit(f"FAIL a4: Peer UDP datagrams under RelayOnly: {sorted(set(peer_udp))}")
