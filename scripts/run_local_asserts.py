@@ -778,6 +778,71 @@ def run_a3_iroh_local():
 import re as _re  # noqa: E402
 
 
+
+REDIAL_NO_RETRY_REASONS = {"kill", "force_disconnect", "cleared_ack", "consent_withdrawn"}
+
+
+def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None):
+    """A4.R reconnect contract over captured Peer logs (8f975dc / fa935fa).
+    Returns (status, msgs, counts); status is "ok", "pending" or "fail".
+    A Peer process starts at its `peer iroh_pilot bound` line. Within one process:
+    every `session_end` carries end_reason= and closed_by=; a `connected gateway=` after a
+    session_end needs a `redial attempt=` in between; redial_in_ms >= base/2; attempt numbers
+    don't go down unless the prior session_end reports up_ms=/up_secs= >= reset secs (the
+    approved logs have no timing, so then they must just not go down); no redial after
+    kill/force_disconnect/cleared_ack/consent_withdrawn."""
+    if base_ms is None:
+        base_ms = int(os.environ.get("SPIKE_REDIAL_BASE_MS") or 2000)
+    if reset_secs is None:
+        reset_secs = float(os.environ.get("SPIKE_REDIAL_RESET_SECS") or 60)
+    floor = base_ms // 2
+    fails, counts = [], {"session_end": 0, "with_reason": 0, "redial": 0, "reconnect": 0}
+    for tag, out in outs_by_tag.items():
+        ended = None          # last session_end fields in this process, until a reconnect
+        redialed = False
+        last_attempt, last_up = None, None
+        for ln in (out or "").splitlines():
+            if "peer iroh_pilot bound " in ln:
+                ended, redialed, last_attempt, last_up = None, False, None, None
+            elif "session_end" in ln and "peer iroh_pilot" in ln:
+                counts["session_end"] += 1
+                er = _re.search(r"\bend_reason=(\S+)", ln)
+                cb = _re.search(r"\bclosed_by=(local|remote)\b", ln)
+                if er:
+                    counts["with_reason"] += 1
+                if not (er and cb):
+                    fails.append(f"[{tag}] session_end without end_reason=/closed_by=: {ln.strip()}")
+                up = _re.search(r"\bup_(ms|secs)=(\d+(?:\.\d+)?)", ln)
+                last_up = (float(up.group(2)) / (1000 if up.group(1) == "ms" else 1)) if up else None
+                ended, redialed = (er.group(1) if er else "?"), False
+            elif "peer iroh_pilot redial attempt=" in ln:
+                counts["redial"] += 1
+                m = _re.search(r"attempt=(\d+) redial_in_ms=(\d+)", ln)
+                if not m:
+                    fails.append(f"[{tag}] unparsable redial line: {ln.strip()}")
+                    continue
+                a, ms = int(m.group(1)), int(m.group(2))
+                if ended in REDIAL_NO_RETRY_REASONS:
+                    fails.append(f"[{tag}] redial after end_reason={ended} (must not redial): {ln.strip()}")
+                if ms < floor:
+                    fails.append(f"[{tag}] redial_in_ms={ms} < floor {floor} (base {base_ms}): {ln.strip()}")
+                if last_attempt is not None and a < last_attempt and not (last_up is not None and last_up >= reset_secs):
+                    fails.append(f"[{tag}] redial attempt went {last_attempt} -> {a} without a >= {reset_secs:g}s session")
+                last_attempt, redialed = a, True
+            elif "peer iroh_pilot connected gateway=" in ln:
+                if ended is not None:
+                    counts["reconnect"] += 1
+                    if not redialed:
+                        fails.append(f"[{tag}] reconnect after session_end end_reason={ended} with no redial attempt= line")
+                ended, redialed = None, False
+    summary = (f"session_end={counts['session_end']} (with end_reason={counts['with_reason']}) "
+               f"redial={counts['redial']} reconnect={counts['reconnect']} floor_ms={floor}")
+    if counts["session_end"] and not counts["with_reason"]:
+        return "pending", [f"PENDING a4 reconnect: no session_end line has end_reason= (peer image predates fa935fa); {summary}"], counts
+    if fails:
+        return "fail", [f"FAIL a4 reconnect: {f}" for f in fails] + [f"  ({summary})"], counts
+    return "ok", [f"OK a4 reconnect contract: {summary}"], counts
+
 def _norm_image_id(v):
     v = (v or "").strip().lower()
     return v[len("sha256:"):] if v.startswith("sha256:") else v
@@ -1268,6 +1333,14 @@ def run_a4_pilot():
             if not ok:
                 raise SystemExit(msg)
             print(msg, flush=True)
+        if tag == "a44" and status == "pass":  # a42/a43/a44 Peer logs captured by now
+            rs, rmsgs, _ = peer_reconnect_check({t: outs[t] for t in ("a42", "a43", "a44") if outs.get(t)})
+            for m_ in rmsgs:
+                print(m_, flush=True)
+            if rs == "fail":
+                raise SystemExit(rmsgs[0])
+            if rs == "pending":
+                pending.append("peer image predates fa935fa (session_end without end_reason)")
         if tag == "a46" and status == "pass":
             lane_b = next((l.split("A46_LANE_B=", 1)[1] for l in outs[tag].splitlines() if "A46_LANE_B=" in l), "?")
             print(f"OK a46 green; lane B ({lane_b}) not required", flush=True)

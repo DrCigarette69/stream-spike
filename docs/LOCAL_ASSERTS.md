@@ -378,6 +378,13 @@ python3 scripts/run_local_asserts.py _a4_selftest        # offline self-test of 
 - `peer udp_counters unavailable (iroh/metrics)`: the Peer logs `udp_counters=unavailable` / `udp_counters_unavailable` (see UDP below).
 - Image arch: pilot devices are x86_64, so only amd64 is built (no arm64 peer-pilot image).
 - Image ID: a45 always prints `A45_IMAGE_ID=<id>`. If `SPIKE_PEER_IMAGE_ID` is set, a4 FAILs unless some `A45_IMAGE_ID` line (or `A45_IMAGE_CONFIG_ID`, for the containerd store) equals it. The comparison ignores case and the `sha256:` prefix, and a missing line also FAILs. If it's unset, a4 prints `INFO a45 image id <id>`. If a45 is skipped, nothing changes (it stays pending).
+- Reconnect contract (A4.R, `peer_reconnect_check`, after a44). This runs over the Peer logs captured in a42, a43 and a44; each `peer iroh_pilot bound` line starts a new process. The rules:
+  - Every `session_end` must carry `end_reason=` and `closed_by=local|remote`; a missing field FAILs. If **no** `session_end` line has `end_reason=`, the result is PENDING `peer image predates fa935fa` instead (approved image `2452f56d`).
+  - Every `connected gateway=` that follows a `session_end` needs a `redial attempt=` line in between; an immediate redial FAILs.
+  - `redial_in_ms` must be ≥ `SPIKE_REDIAL_BASE_MS`/2 (default 1000).
+  - `attempt=` must not go down within a process. A reset is allowed only if the previous `session_end` carries `up_ms=`/`up_secs=` ≥ `SPIKE_REDIAL_RESET_SECS` (default 60). Today's logs have no timing, so they must simply not go down.
+  - No redial is allowed after `end_reason=kill|force_disconnect|cleared_ack|consent_withdrawn`.
+  - Each run prints `OK a4 reconnect contract: session_end=N (with end_reason=N) redial=N reconnect=N floor_ms=N`.
 
 **Cross-cutting checks** (each prints an `OK ...` line; the needles live in `A4_REFUSAL_GREPS`, `A4_TIMING_GREPS`, `A4_UDP_ZERO_GREPS`, `A4_NOROUTE_GREPS` in `run_local_asserts.py`):
 
