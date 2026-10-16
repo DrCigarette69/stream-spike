@@ -16,7 +16,12 @@ the image (amd64 only for now):
     the /data volume, same endpoint ID after a container restart, budget file 0600
 Never reaches the public internet at test time (all runs are --network none; the build itself
 pulls crates like the compose images do). Cleans up its containers + volume; keeps the image
-tag (rebuilds reuse the layer cache).
+image only if asked (see below).
+Image selection (a45 never moves the shared `peer-pilot:amd64` tag):
+  * SPIKE_PEER_IMAGE=<ref or sha256 ID>: check that already-loaded image, no build. Requires
+    SPIKE_PEER_IMAGE_ID (the pin it must match).
+  * otherwise build to SPIKE_A45_TAG (default temporary `peer-pilot:a45-<pid>`), and remove that
+    tag at the end unless SPIKE_A45_KEEP=1. SPIKE_A45_TAG=peer-pilot:amd64 is refused.
 Prints A45_IMAGE_ID=<id>. If SPIKE_PEER_IMAGE_ID is set, FAILs unless the image is that ID
 (or, on Docker 29 containerd store, its config digest is).
 SKIP (exit 0) when docker or `sudo -n` is unavailable, unless SPIKE_A4=1 (then FAIL).
@@ -27,7 +32,10 @@ Admin calls inside the container use the image's `peer-admin` (bash /dev/tcp, no
 import json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TAG = os.environ.get("SPIKE_A45_TAG", "peer-pilot:amd64")
+SHARED_TAG = "peer-pilot:amd64"
+PREBUILT = os.environ.get("SPIKE_PEER_IMAGE", "").strip()
+TAG = PREBUILT or os.environ.get("SPIKE_A45_TAG", "").strip() or f"peer-pilot:a45-{os.getpid()}"
+KEEP = bool(PREBUILT) or os.environ.get("SPIKE_A45_KEEP", "").strip() == "1"
 # Optional pin: approved image ID (sha256:...). When set, a45 FAILs unless the built/loaded image
 # is that ID (directly, or as the config digest under Docker 29's containerd store).
 WANT_ID = os.environ.get("SPIKE_PEER_IMAGE_ID", "").strip()
@@ -139,9 +147,26 @@ def check_image_id(shown):
 def main():
     if not preflight():
         return 0
+    if PREBUILT:
+        if not WANT_ID:
+            fail("SPIKE_PEER_IMAGE set without SPIKE_PEER_IMAGE_ID; refusing to check an unpinned image")
+        d("image", "inspect", TAG)
+        print(f"a45: checking pre-loaded image {TAG} (no build)", flush=True)
+        return checks()
+    if TAG == SHARED_TAG:
+        fail(f"refusing to build to the shared tag {SHARED_TAG}; use SPIKE_A45_TAG=<other> or SPIKE_PEER_IMAGE")
     t0 = time.time()
-    r = d("build", "-q", "-f", "rust/crates/stream-peer/Dockerfile.pilot", "-t", TAG, "rust/", timeout=3600)
-    print(f"a45: built {TAG} in {time.time() - t0:.0f}s", flush=True)
+    try:
+        d("build", "-q", "-f", "rust/crates/stream-peer/Dockerfile.pilot", "-t", TAG, "rust/", timeout=3600)
+        print(f"a45: built {TAG} in {time.time() - t0:.0f}s", flush=True)
+        return checks()
+    finally:
+        if not KEEP:
+            d("rmi", TAG, check=False)  # untags only; layers stay in cache
+            print(f"a45: removed temporary tag {TAG} (SPIKE_A45_KEEP=1 to keep)", flush=True)
+
+
+def checks():
 
     info = json.loads(d("image", "inspect", TAG).stdout)[0]
     check_image_id(info["Id"])
