@@ -3747,8 +3747,11 @@ name = "stream-relay"
 version = "0.1.0"
 dependencies = [
  "iroh-relay",
+ "rustls 0.23.45",
+ "rustls-pemfile 2.2.0",
  "stream-proto",
  "tokio",
+ "tokio-rustls-acme",
  "tracing",
  "tracing-subscriber",
 ]

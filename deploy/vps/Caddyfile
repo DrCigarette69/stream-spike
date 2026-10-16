@@ -1,0 +1,67 @@
+# Behind the nginx SNI passthrough on :443. Loopback only.
+{
+	default_bind 127.0.0.1
+	https_port 9443
+	http_port 8081
+	auto_https disable_redirects
+	admin off
+	acme_ca {$ACME_CA}
+}
+
+(alpn_only) {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+}
+
+# Relay host: cert only (TLS-ALPN challenge is routed here by nginx; relay traffic is not).
+{$RELAY_HOST} {
+	import alpn_only
+	respond 404
+}
+
+# Allowlisted test site (A4 open question 2): tiny echo, no upstream.
+{$ECHO_HOST} {
+	import alpn_only
+	header Content-Type "text/plain; charset=utf-8"
+	header Cache-Control no-store
+	respond /health "ok" 200
+	respond "stream-pilot echo ok method={method} path={path} host={host}
+" 200
+}
+
+# Public Control surface for Peers: ONLY the two read/verify paths Peers call.
+# Admin (/v1/admin/*, POST /v1/egress/state) and everything else are 404 here; admin also needs
+# SPIKE_ADMIN_TOKEN on Control itself.
+{$CONTROL_HOST} {
+	import alpn_only
+	@state {
+		method GET
+		path /v1/egress/state
+	}
+	@verify {
+		method POST
+		path /v1/tickets/verify
+	}
+	@health {
+		method GET
+		path /health
+	}
+	handle @state {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @verify {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle @health {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond "not found" 404
+	}
+}

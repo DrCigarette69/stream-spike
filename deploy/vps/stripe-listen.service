@@ -1,0 +1,17 @@
+# /etc/systemd/system/stream-stripe-listen.service — Stripe CLI (Jeff's login, user ubuntu)
+# forwards test-mode webhooks to Control on loopback. Secret is in /opt/stream-pilot/stripe.env.
+[Unit]
+Description=Stream pilot: stripe listen -> Control webhook
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+# STRIPE_API_KEY = the same test key Control uses, so listen follows that account (env, not argv).
+EnvironmentFile=-/opt/stream-pilot/stripe-listen.env
+ExecStart=/home/ubuntu/.stripe/bin/stripe listen --forward-to http://127.0.0.1:8080/v1/stripe/webhook --events payment_intent.succeeded,payment_intent.payment_failed
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

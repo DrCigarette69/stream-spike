@@ -14,11 +14,14 @@ stream-proto = { path = "../stream-proto" }
 iroh-relay = { workspace = true, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"], optional = true }
 tracing = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
+tokio-rustls-acme = { version = "0.8", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 # Not in the default build: `cargo build --locked -p stream-relay --features server[,a4_local]`.
 default = []
-server = ["dep:iroh-relay", "dep:tokio"]
+server = ["dep:iroh-relay", "dep:tokio", "dep:rustls", "dep:rustls-pemfile", "dep:tokio-rustls-acme"]
 # On-box lane only: allows plain-http dev mode, and only on 10.73.0.254. Never for the VPS build.
 a4_local = ["stream-proto/a4_local"]

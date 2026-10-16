@@ -345,10 +345,35 @@ Endpoint: `RelayMode::Custom(<allow URL>, quic: None)`, `PathSelection::RelayOnl
 
 **Proof:** `python3 scripts/a42_self_relay_smoke.py` → **A4.2_SELF_RELAY_GREEN** (single instance via `/tmp/stream-spike-a42.lock`; netns `a42-gw` / `a42-relay` / `a42-peer` from `scripts/a42_netns_up.sh`, torn down by `a42_netns_down.sh`). The relay ns is the only one attached to both sides and has `ip_forward=0`, so Gateway (10.73.0.1) and Peer (10.73.0.200) have no route to each other; the smoke shows TCP/UDP to the other side is `Network is unreachable`, then relay-only connect, Control-minted ticket → AUTH_OK → OPEN with 0 UDP datagrams on both ends, n0/other relay refused, and relay down → live conn closed, new dial `RELAY_UNREACHABLE`, Gateway start refused.
 
-**VPS deploy (TODO, pending Jeff — ALPHA4_PILOT open question 1):** nothing is deployed.
-- Needs: host (small VPS), a hostname we own, DNS A/AAAA record, firewall allowing 80 (ACME / captive portal) + 443 (relay) only; Gateway client/admin listeners stay on localhost (SSH tunnel).
-- `tls` hook (validated now, then refused with `relay_tls_todo` until the deploy slice): `STREAM_RELAY_MODE=tls`, `STREAM_RELAY_HOSTNAME`, `STREAM_RELAY_HTTPS_BIND=<public-ip>:443`, `STREAM_RELAY_HTTP_BIND=<public-ip>:80`, `STREAM_RELAY_TLS_CERT` / `STREAM_RELAY_TLS_KEY` (Let's Encrypt via certbot, or iroh-relay's built-in ACME), `STREAM_RELAY_ALLOW_ENDPOINTS` (Gateway + Jeff's two devices).
-- Clients then use `SPIKE_RELAY_ALLOW_URL=https://<hostname>/` from pilot builds (no `a4_local`); certs are always verified.
+**VPS deploy (A4.2 pilot, 2026-10-16).** Files: `deploy/vps/` (compose, nginx SNI map, Caddyfile, `server_setup.sh`, `deploy.sh`, `stripe-listen.service`). Hosts per `ALPHA4_PILOT.md` *Pinned pilot hosts*.
+
+| Name | Serves | Cert |
+|---|---|---|
+| `170-9-253-4.sslip.io:443` | stream-relay (`SPIKE_RELAY_ALLOW_URL=https://170-9-253-4.sslip.io/`) | LE via Caddy (TLS-ALPN-01), relay reads it (manual mode) |
+| `echo.170-9-253-4.sslip.io:443` | echo test site (Caddy `respond`), the only allowlist entry | LE via Caddy |
+| `control.170-9-253-4.sslip.io:443` | Control for Peers: **only** `GET /v1/egress/state`, `POST /v1/tickets/verify`, `GET /health`; everything else 404 | LE via Caddy |
+| `170.9.253.4:80` | relay captive-portal probe | — |
+
+- Layout (host networking): nginx `stream` on `<private-ip>:443` does SNI passthrough (no TLS termination): relay host → relay `127.0.0.1:8443`; ALPN `acme-tls/1` and every other name → Caddy `127.0.0.1:9443`. Control `127.0.0.1:8080`, Gateway proxy/admin `127.0.0.1:1080`, Gateway iroh `127.0.0.1:9102`: loopback only (SSH tunnel). All services `restart: unless-stopped`; `/etc/cron.d/stream-pilot-relay` restarts the relay weekly to pick up Caddy's renewed cert.
+- The relay's built-in ACME (`STREAM_RELAY_TLS_CERT_MODE=acme`, tokio-rustls-acme 0.8) is implemented but **fails against Let's Encrypt today** (`unknown variant dns-persist-01` in the directory/authorization JSON), hence Caddy holds the certs.
+- Bind: the VPS NIC has only the private IP (`10.0.0.239`, OCI 1:1 NAT); public `170.9.253.4` is never a local address. `STREAM_RELAY_PUBLIC_PORT=443` keeps the advertised URL on 443 while the relay binds loopback `:8443`.
+- Firewall: host iptables (OCI image) gets `NEW tcp dpt:80` and `dpt:443` ACCEPT before the `REJECT` rule, persisted in `/etc/iptables/rules.v4` (backup `rules.v4.pre-stream-pilot`). ufw (already allowing 22/80/443/7842udp) sits behind that REJECT, so it is not the effective filter. **The OCI VCN security list / NSG must also allow TCP 80 + 443 ingress** (console, Jeff).
+- Gateway key: 32 random bytes generated on the server into volume `stream-pilot_gateway-key` (`/key/gateway.key`, 0600); EndpointId derived by `server_setup.sh` (not the dev key). Relay `STREAM_RELAY_ALLOW_ENDPOINTS` = Gateway + one id per line in `/opt/stream-pilot/peer_endpoints.txt` (re-run deploy after adding a device).
+- Secrets (server only, root 0600 in `/opt/stream-pilot`): `secrets.env` (`SPIKE_TICKET_SECRET`, `SPIKE_ADMIN_TOKEN`), `stripe.env` (`STRIPE_WEBHOOK_SECRET`, `STRIPE_TEST_SECRET_KEY`), `stripe-listen.env` (`STRIPE_API_KEY` = same test key, so `stripe listen` follows the key's account, not the CLI login's). Never print them; don't paste `docker inspect` output.
+- Stripe: systemd `stream-stripe-listen.service` (user ubuntu, Jeff's CLI) forwards `payment_intent.succeeded|payment_failed` to `http://127.0.0.1:8080/v1/stripe/webhook`.
+
+```bash
+# Redeploy from the box (repo root at the SHA to ship). ACME_PROD=0 = LE staging; use 1 once staging is green.
+VPS=ubuntu@170.9.253.4 VPS_KEY=~/.ssh/vps_jeff IP_PUBLIC=170.9.253.4 PUBLIC_BIND=10.0.0.239 ACME_PROD=1 \
+  bash deploy/vps/deploy.sh            # builds relay/gateway(iroh_pilot)/control, docker save | ssh load, compose up
+# On the VPS (/opt/stream-pilot, root): status / restart
+docker compose --env-file pilot.env ps ; docker compose --env-file pilot.env restart relay
+# Kill switch (both halves must be on; default OFF). Flag via Control (loopback + admin token):
+T=$(grep ^SPIKE_ADMIN_TOKEN= secrets.env | cut -d= -f2)
+curl -s -X POST http://127.0.0.1:8080/v1/admin/egress -H "X-Admin-Token: $T" -d '{"public_egress":true}'
+GATEWAY_PUBLIC_EGRESS=1 docker compose --env-file pilot.env up -d gateway   # local half; back to off: omit the var
+curl -s -X POST http://127.0.0.1:8080/v1/admin/egress -H "X-Admin-Token: $T" -d '{"public_egress":false}'
+```
 
 ## A4.3 Gateway egress check + kill propagation (`iroh_pilot`, TOM-23)
 

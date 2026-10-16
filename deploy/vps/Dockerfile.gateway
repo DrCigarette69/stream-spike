@@ -1,0 +1,13 @@
+# A4.3 pilot Gateway image. Build context: rust/ workspace root.
+#   docker build -f ../deploy/vps/Dockerfile.gateway -t stream-gateway:pilot rust/
+# Always --features iroh_pilot, never a4_local.
+ARG RUST_VERSION=1.85
+FROM rust:${RUST_VERSION}-bookworm AS builder
+WORKDIR /build
+COPY . .
+RUN cargo build --release --locked -p stream-gateway --features iroh_pilot \
+ && strip target/release/stream-gateway
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/stream-gateway /usr/local/bin/stream-gateway
+ENTRYPOINT ["/usr/local/bin/stream-gateway"]

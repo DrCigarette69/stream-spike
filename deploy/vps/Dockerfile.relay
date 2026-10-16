@@ -1,0 +1,13 @@
+# A4.2 pilot relay image. Build context: rust/ workspace root.
+#   docker build -f ../deploy/vps/Dockerfile.relay -t stream-relay:pilot rust/
+# Pilot build: --features server only (never a4_local -> no plain-http dev mode).
+ARG RUST_VERSION=1.85
+FROM rust:${RUST_VERSION}-bookworm AS builder
+WORKDIR /build
+COPY . .
+RUN cargo build --release --locked -p stream-relay --features server \
+ && strip target/release/stream-relay
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/stream-relay /usr/local/bin/stream-relay
+ENTRYPOINT ["/usr/local/bin/stream-relay"]

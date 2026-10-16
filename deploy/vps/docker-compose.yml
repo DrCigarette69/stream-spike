@@ -1,0 +1,91 @@
+# Alpha-4 pilot server (VPS). See docs/PLATFORM_RUNBOOK.md "A4.2 VPS deploy".
+# Host networking: every listener binds a named address. Public: PUBLIC_BIND:80 (relay
+# captive portal) and PUBLIC_BIND:443 (nginx SNI passthrough). Everything else is 127.0.0.1.
+# Non-secret settings: pilot.env. Secrets: secrets.env (0600, generated on the server).
+name: stream-pilot
+services:
+  control:
+    image: stream-control:pilot
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - pilot.env
+      - secrets.env
+      # STRIPE_WEBHOOK_SECRET (from `stripe listen --print-secret`) and, once Jeff says yes,
+      # STRIPE_TEST_SECRET_KEY (sk_test_/rk_test_ only). Root 0600; absent = mock path.
+      - path: stripe.env
+        required: false
+    environment:
+      SPIKE_DB: /data/spike.sqlite
+      SPIKE_LISTEN: 127.0.0.1:8080
+      SPIKE_DENYLIST: /fixtures/denylist.seed.json
+      SPIKE_TRANSPORT: iroh_pilot
+      SPIKE_IROH_GATEWAY_ADDR: ""
+    volumes:
+      - control-data:/data
+      - ./fixtures:/fixtures:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  relay:
+    image: stream-relay:pilot
+    network_mode: host
+    restart: unless-stopped
+    env_file: [pilot.env]
+    environment:
+      STREAM_RELAY_MODE: tls
+      STREAM_RELAY_HTTPS_BIND: 127.0.0.1:8443
+      STREAM_RELAY_HTTP_BIND: ${PUBLIC_BIND}:80
+      STREAM_RELAY_PUBLIC_PORT: "443"
+      # Cert from Caddy's store (tokio-rustls-acme 0.8 can't parse LE's current directory:
+      # unknown challenge `dns-persist-01`). STREAM_RELAY_TLS_CERT/KEY come from pilot.env.
+      STREAM_RELAY_TLS_CERT_MODE: manual
+    volumes:
+      - caddy-data:/caddy:ro
+
+  gateway:
+    image: stream-gateway:pilot
+    network_mode: host
+    restart: unless-stopped
+    env_file: [pilot.env]
+    environment:
+      CONTROL_URL: http://127.0.0.1:8080
+      SPIKE_TRANSPORT: iroh_pilot
+      SPIKE_LISTEN_PROXY: 127.0.0.1:1080
+      SPIKE_IROH_LISTEN: 127.0.0.1:9102
+      SPIKE_GATEWAY_KEY_PATH: /key/gateway.key
+      # Kill switch: local half OFF by default. Flip both halves to go live (runbook).
+      SPIKE_PUBLIC_EGRESS: ${GATEWAY_PUBLIC_EGRESS:-0}
+    volumes:
+      - gateway-key:/key
+    depends_on:
+      control: {condition: service_healthy}
+      relay: {condition: service_started}
+
+  sni:
+    image: nginx:1.29-alpine
+    network_mode: host
+    restart: unless-stopped
+    env_file: [pilot.env]
+    volumes:
+      - ./nginx.conf:/etc/nginx/templates/nginx.conf.template:ro
+    environment:
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+      NGINX_ENVSUBST_FILTER: "^(RELAY_HOST_RE|PUBLIC_BIND)$"
+
+  caddy:
+    image: caddy:2.10-alpine
+    network_mode: host
+    restart: unless-stopped
+    env_file: [pilot.env]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  control-data:
+  gateway-key:
+  caddy-data:
