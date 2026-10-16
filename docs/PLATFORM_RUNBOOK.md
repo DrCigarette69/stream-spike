@@ -364,7 +364,7 @@ Endpoint: `RelayMode::Custom(<allow URL>, quic: None)`, `PathSelection::RelayOnl
 
 ```bash
 # Redeploy from the box (repo root at the SHA to ship). ACME_PROD=0 = LE staging; use 1 once staging is green.
-VPS=ubuntu@170.9.253.4 VPS_KEY=~/.ssh/vps_jeff IP_PUBLIC=170.9.253.4 PUBLIC_BIND=10.0.0.239 ACME_PROD=1 \
+VPS=<user>@<vps> VPS_KEY=<key> IP_PUBLIC=170.9.253.4 PUBLIC_BIND=10.0.0.239 ACME_PROD=1 \
   bash deploy/vps/deploy.sh            # builds relay/gateway(iroh_pilot)/control, docker save | ssh load, compose up
 # On the VPS (/opt/stream-pilot, root): status / restart
 docker compose --env-file pilot.env ps ; docker compose --env-file pilot.env restart relay

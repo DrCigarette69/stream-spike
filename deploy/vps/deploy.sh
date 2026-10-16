@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Box-side redeploy of the Alpha-4 pilot server. Usage (repo root, clean tree at the SHA to ship):
-#   VPS=ubuntu@170.9.253.4 VPS_KEY=~/.ssh/vps_jeff IP_PUBLIC=170.9.253.4 PUBLIC_BIND=10.0.0.239 \
+#   VPS=<user>@<vps> VPS_KEY=<key> IP_PUBLIC=170.9.253.4 PUBLIC_BIND=10.0.0.239 \
 #     bash deploy/vps/deploy.sh [--no-build]
 set -euo pipefail
 : "${VPS:?}" "${VPS_KEY:?}" "${IP_PUBLIC:?}" "${PUBLIC_BIND:?}"
