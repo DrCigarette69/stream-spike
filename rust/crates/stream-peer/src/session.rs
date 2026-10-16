@@ -40,6 +40,7 @@ pub enum EndReason {
     TunnelMsg(String),
 }
 
+#[cfg_attr(not(feature = "iroh_pilot"), allow(dead_code))]
 impl EndReason {
     pub fn label(&self) -> String {
         match self {
@@ -73,6 +74,7 @@ impl EndReason {
     }
 }
 
+#[cfg_attr(not(feature = "iroh_pilot"), allow(dead_code))]
 impl SessionEnd {
     /// (`end_reason`, `closed_by`) for the `session_end` log line.
     pub fn describe(&self) -> (String, &'static str) {

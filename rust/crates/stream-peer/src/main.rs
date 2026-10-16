@@ -56,7 +56,8 @@ async fn main() {
         )
         .init();
 
-    let cfg = Config::from_env();
+    #[allow(unused_mut)]
+    let mut cfg = Config::from_env();
     let addr: SocketAddr = match config::parse_admin_addr(&cfg.admin_listen) {
         Ok(a) => a,
         Err(e) => {
@@ -74,6 +75,18 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // iroh_pilot: never the shared `peer_demo` id (Gateway replaces sessions per peer_id).
+    // Unset -> derived from the endpoint ID once the key is loaded (empty until then).
+    #[cfg(feature = "iroh_pilot")]
+    if config::is_iroh_pilot(&cfg.transport) {
+        if let Err(e) = cfg.pilot_peer_id_env_ok() {
+            eprintln!("peer refused: {e}");
+            std::process::exit(2);
+        }
+        if !cfg.peer_id_from_env {
+            cfg.peer_id.clear();
+        }
+    }
     // A4.4: pilot egress config refuses start before anything binds or dials.
     let plane = match egress_state::build_plane(&cfg) {
         Ok(p) => p,

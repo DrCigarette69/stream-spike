@@ -8,6 +8,9 @@ pub struct Config {
     pub relay_dial: String,
     pub admin_listen: String,
     pub peer_id: String,
+    /// `SPIKE_PEER_ID` was set (non-empty). iroh_pilot derives peer_id from the endpoint otherwise.
+    #[cfg_attr(not(feature = "iroh_pilot"), allow(dead_code))]
+    pub peer_id_from_env: bool,
     pub endpoint_id: String,
     pub host_tier: String,
     pub isp_ack_version: String,
@@ -26,7 +29,39 @@ pub struct Config {
     pub p9_ack_preset: bool,
 }
 
+/// Shared demo id used by the local/test lanes; never valid for iroh_pilot (the Gateway keys
+/// sessions by peer_id, so two Peers on it replace each other in a loop).
+pub const DEMO_PEER_ID: &str = "peer_demo";
+
+/// iroh_pilot peer_id: explicit `SPIKE_PEER_ID` (source `env`), else `peer_` + first 16 hex of the
+/// endpoint ID (source `endpoint`). Explicit `peer_demo` is refused.
+pub fn pilot_peer_id(explicit: Option<&str>, endpoint_hex: &str) -> Result<(String, &'static str), String> {
+    if let Some(v) = explicit.map(str::trim).filter(|v| !v.is_empty()) {
+        if v == DEMO_PEER_ID {
+            return Err(format!(
+                "SPIKE_PEER_ID={DEMO_PEER_ID} is not allowed with iroh_pilot (shared demo id); unset SPIKE_PEER_ID, it is derived from the endpoint ID"
+            ));
+        }
+        return Ok((v.to_string(), "env"));
+    }
+    let hex: String = endpoint_hex.chars().take(16).collect();
+    if hex.len() < 16 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("cannot derive peer_id from endpoint id {endpoint_hex:?}"));
+    }
+    Ok((format!("peer_{}", hex.to_ascii_lowercase()), "endpoint"))
+}
+
 impl Config {
+    /// iroh_pilot startup check (before the key is loaded): refuse an explicit demo id.
+    #[cfg_attr(not(feature = "iroh_pilot"), allow(dead_code))]
+    pub fn pilot_peer_id_env_ok(&self) -> Result<(), String> {
+        if self.peer_id_from_env {
+            pilot_peer_id(Some(&self.peer_id), "0000000000000000").map(|_| ())
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn from_env() -> Self {
         let transport = std::env::var("SPIKE_TRANSPORT")
             .unwrap_or_else(|_| "fake_relay".into())
@@ -48,7 +83,11 @@ impl Config {
             relay_dial,
             admin_listen: std::env::var("SPIKE_PEER_ADMIN")
                 .unwrap_or_else(|_| "0.0.0.0:9200".into()),
-            peer_id: std::env::var("SPIKE_PEER_ID").unwrap_or_else(|_| "peer_demo".into()),
+            peer_id: std::env::var("SPIKE_PEER_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "peer_demo".into()),
+            peer_id_from_env: std::env::var("SPIKE_PEER_ID").map(|v| !v.trim().is_empty()).unwrap_or(false),
             endpoint_id: std::env::var("SPIKE_ENDPOINT_ID")
                 .unwrap_or_else(|_| "iroh_ep_demo_001".into()),
             host_tier: std::env::var("SPIKE_HOST_TIER").unwrap_or_else(|_| "casual".into()),
@@ -157,5 +196,31 @@ mod tests {
         // guard used by relay: iroh + non-loopback => refuse
         let host = "8.8.8.8";
         assert!(is_iroh_loopback("iroh_loopback") && !is_loopback_host(host));
+    }
+}
+
+#[cfg(test)]
+mod pilot_peer_id_tests {
+    use super::*;
+
+    #[test]
+    fn derived_from_endpoint_when_unset() {
+        let box_ep = "92a9d943afd7d7d472c4a29a28f60ab50916f00881d9f20aac703fa32d498c09";
+        assert_eq!(pilot_peer_id(None, box_ep), Ok(("peer_92a9d943afd7d7d4".to_string(), "endpoint")));
+        assert_eq!(pilot_peer_id(Some("  "), box_ep).unwrap().1, "endpoint");
+        assert_eq!(pilot_peer_id(None, &box_ep.to_ascii_uppercase()).unwrap().0, "peer_92a9d943afd7d7d4");
+    }
+
+    #[test]
+    fn explicit_env_wins_but_demo_refused() {
+        assert_eq!(pilot_peer_id(Some("peer_lab1"), "ab".repeat(32).as_str()), Ok(("peer_lab1".to_string(), "env")));
+        let e = pilot_peer_id(Some("peer_demo"), &"ab".repeat(32)).unwrap_err();
+        assert!(e.contains("SPIKE_PEER_ID=peer_demo") && e.contains("iroh_pilot"), "{e}");
+    }
+
+    #[test]
+    fn bad_endpoint_refused_never_demo() {
+        assert!(pilot_peer_id(None, "iroh_ep_demo_001").is_err());
+        assert!(pilot_peer_id(None, "abc").is_err());
     }
 }

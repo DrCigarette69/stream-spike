@@ -136,7 +136,22 @@ pub async fn run(state: SharedState, slot: TransportSlot, http: reqwest::Client,
     };
     let id = endpoint_id_of(key.bytes());
     eprintln!("peer iroh_endpoint_id={id}");
-    state.write().await.cfg.endpoint_id = id.to_string();
+    let peer_id_src = {
+        let mut g = state.write().await;
+        g.cfg.endpoint_id = id.to_string();
+        let explicit = g.cfg.peer_id_from_env.then(|| g.cfg.peer_id.clone());
+        match crate::config::pilot_peer_id(explicit.as_deref(), &id.to_string()) {
+            // Hello, heartbeat, kill and ack all read cfg.peer_id, so they stay consistent.
+            Ok((pid, src)) => {
+                g.cfg.peer_id = pid;
+                src
+            }
+            Err(e) => {
+                drop(g);
+                return refuse(&state, &e).await;
+            }
+        }
+    };
     let cidrs = match guard::allowlist_from_env() {
         Ok(c) => c,
         Err(e) => return refuse(&state, &e.log_line()).await,
@@ -151,6 +166,7 @@ pub async fn run(state: SharedState, slot: TransportSlot, http: reqwest::Client,
         Err(e) => return refuse(&state, &e).await,
     };
     eprintln!("peer iroh_pilot bound {:?} relay={} path=relay_only discovery=off quic=none", ep.bound_sockets(), target.relay_url);
+    eprintln!("peer iroh_pilot peer_id={} source={peer_id_src}", state.read().await.cfg.peer_id);
     let udp = udp_source(&ep);
     eprintln!("peer iroh_pilot {}", counters_line(udp.as_ref()));
     if let Err(e) = require_counters(udp.as_ref(), guard::Lane::build()) {
