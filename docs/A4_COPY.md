@@ -25,6 +25,7 @@ P1 ack → P2 consent → P9 allowlist note → dial. On drop or reject → P8. 
 | `egress_allowlist_mismatch` | This device needs an update before it can share. Update the app, then turn sharing back on. |
 | `relay_path_required` | Sharing stopped because the connection left its expected secure route. Turn sharing back on to reconnect. |
 | `egress_budget_unreadable` | This device couldn't check today's sharing limit, so sharing is stopped for now. It starts again tomorrow. |
+| `peer_id_in_use` | Sharing is already running for this device somewhere else. Stop it there, or set up sharing again on this device to keep going. |
 | anything unknown | falls back to `connection_lost` |
 
 "Tomorrow" means the next UTC day, matching `SPIKE_EGRESS_BYTE_CAP`. If the cap reset moves to local time, this line stays the same.
