@@ -155,6 +155,8 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
 - The IP embedded in an sslip name must equal the pinned IP `170.9.253.4`. `EgressAllow::pin(host, port)` / Python `.pin()` returns the embedded IP and never asks DNS. An explicit `=IP` that differs → `egress_pin_mismatch` at parse time. A matching explicit pin (`echo.170-9-253-4.sslip.io:443=170.9.253.4`) is allowed but not needed.
 - The default allowlist and caps stay as they are (50 MB/day/Peer, ≤2 concurrent streams) until Jeff answers risks 2 and 9. This section doesn't add `example.com:443` or any other host.
 - The kill switch is off by default: `SPIKE_PUBLIC_EGRESS` unset means no public egress. It is turned on only for the A4.9 run.
+- Pilot devices: both are x86_64, so only the amd64 `peer-pilot` image ships. No arm64 image.
+- Stripe lane B (A4.6): `stripe listen` runs on the VPS and forwards test-mode webhooks to Control. Jeff logs in there himself. No Stripe key or webhook secret goes in the repo.
 - Access details for the VPS stay out of the repo.
 
 ## Risks / open questions

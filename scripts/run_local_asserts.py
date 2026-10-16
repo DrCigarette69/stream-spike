@@ -1238,10 +1238,7 @@ def run_a4_pilot():
             if not final:
                 pending.append(f"a44 final marker {A44_FINAL_MARKER} (only A4.4_PEER_EGRESS_PART1_GREEN)")
                 print(f"PENDING a44: a4 needs {A44_FINAL_MARKER}; got PART1 only", flush=True)
-        if tag == "a45" and status == "pass":
-            arch = (_re.findall(r"arch=(\S+)", outs[tag]) or ["?"])[-1]
-            print(f"INFO a45 image arch={arch}; arm64 image NOT required by a4 for now "
-                  "(pending Jeff's `uname -m`)", flush=True)
+        # a45: pilot devices are x86_64, so amd64 is the only shipped peer-pilot image.
         if tag == "a46" and status == "pass":
             lane_b = next((l.split("A46_LANE_B=", 1)[1] for l in outs[tag].splitlines() if "A46_LANE_B=" in l), "?")
             print(f"OK a46 green; lane B ({lane_b}) not required", flush=True)

@@ -376,7 +376,7 @@ python3 scripts/run_local_asserts.py _a4_selftest        # offline self-test of 
 - `a45` script absent.
 - Any sub-smoke SKIP (missing cargo / sudo / docker without a strict env).
 - `peer udp_counters unavailable (iroh/metrics)`: the Peer logs `udp_counters=unavailable` / `udp_counters_unavailable` (see UDP below).
-- Not required: an arm64 Peer image (a4 prints `INFO a45 image arch=...; arm64 image NOT required`).
+- Image arch: pilot devices are x86_64, so only amd64 is built (no arm64 peer-pilot image).
 
 **Cross-cutting checks** (each prints an `OK ...` line; the needles live in `A4_REFUSAL_GREPS`, `A4_TIMING_GREPS`, `A4_UDP_ZERO_GREPS`, `A4_NOROUTE_GREPS` in `run_local_asserts.py`):
 
