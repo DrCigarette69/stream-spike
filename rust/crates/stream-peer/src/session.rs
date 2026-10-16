@@ -99,6 +99,11 @@ pub(crate) fn gateway_reject(transport: &str, msg: &Value) -> Option<String> {
         Some("AUTH_REJECT") => {}
         // A3.1: HELLO endpoint_id != authenticated id -> ERR endpoint_mismatch
         Some("ERR") if why == "endpoint_mismatch" => {}
+        // A4.5 Gateway (ce80867): ERR {"error":"peer_id_in_use","code":"peer_id_in_use"}, then
+        // QUIC close(1, "peer_id_in_use"). The frame usually arrives before the close.
+        Some("ERR") if why == "peer_id_in_use" || msg.get("code").and_then(|v| v.as_str()) == Some("peer_id_in_use") => {
+            return Some("peer_id_in_use".to_string());
+        }
         _ => return None,
     }
     Some(why.to_string())
@@ -362,6 +367,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn err_peer_id_in_use_wire_form_is_a_reject() {
+        let m = json!({"type": "ERR", "error": "peer_id_in_use", "code": "peer_id_in_use"});
+        assert_eq!(gateway_reject("iroh_pilot", &m).as_deref(), Some("peer_id_in_use"));
+        let m = json!({"type": "ERR", "error": "x", "code": "peer_id_in_use"});
+        assert_eq!(gateway_reject("iroh_pilot", &m).as_deref(), Some("peer_id_in_use"));
+        assert_eq!(gateway_reject("iroh_pilot", &json!({"type": "ERR", "error": "other"})), None);
+        assert_eq!(gateway_reject("fake_relay", &json!({"type": "ERR", "error": "peer_id_in_use"})), None);
+    }
 
     #[test]
     fn auth_reject_only_terminal_for_iroh_local() {
