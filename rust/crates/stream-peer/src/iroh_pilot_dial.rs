@@ -217,7 +217,7 @@ pub async fn dial_loop(
         let session = session::run(state, handle, http, recv, send);
         tokio::pin!(watcher);
         tokio::pin!(session);
-        let mut end_desc: Option<(String, &'static str)> = None;
+        let end_desc: Option<(String, &'static str)>;
         let end = tokio::select! {
             v = &mut watcher => {
                 let _ = (&mut session).await; // transport killed: session ends promptly

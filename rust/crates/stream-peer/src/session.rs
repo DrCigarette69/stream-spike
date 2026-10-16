@@ -187,7 +187,7 @@ where
     let mut lines = crate::frames::LineReader::new(reader);
     let mut last_hb = Instant::now() - Duration::from_secs(3600);
     let hb = Duration::from_secs_f64(heartbeat_s.max(0.5));
-    let mut end = SessionEnd::Ended(EndReason::RemoteClosed);
+    let end: SessionEnd;
 
     loop {
         {
