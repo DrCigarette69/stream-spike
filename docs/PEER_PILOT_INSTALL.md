@@ -1,7 +1,7 @@
 # Pilot Peer install (A4.5)
 
-For the two pilot Linux devices. **amd64 only for now** (arm64 image comes once the device
-architecture is confirmed; check yours with `uname -m`: `x86_64` = amd64, `aarch64` = arm64).
+For the two pilot Linux devices. **amd64 only**: both pilot devices are x86_64. The pilot image is
+`peer-pilot:amd64`, ID `sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`.
 
 The image is built from `rust/crates/stream-peer/Dockerfile.pilot`. It contains no key and no
 settings: each device's identity key and daily byte counter live in a Docker volume mounted at
@@ -17,31 +17,28 @@ sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:amd6
 sudo docker save peer-pilot:amd64 | gzip > peer-pilot-amd64.tar.gz
 ```
 
-For an arm64 device (`aarch64`), the same file cross-builds on an amd64 box (no emulation needed):
-
-```
-sudo docker buildx build --platform linux/arm64 --load \
-  -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:arm64 rust/
-sudo docker save peer-pilot:arm64 | gzip > peer-pilot-arm64.tar.gz
-```
-
 Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`.
-Compare `sudo docker image inspect -f '{{.Id}}' peer-pilot:amd64` with the ID you were given.
+Compare `sudo docker image inspect -f '{{.Id}}' peer-pilot:amd64` with the ID above
+(`sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`).
 
 ## 2. Settings file
 
-Create `/etc/peer-pilot.env` (mode 0600). Fill in the values you were sent; leave the last
-block commented out so you see each consent screen yourself.
+Create `/etc/peer-pilot.env` (mode 0600) with the live pilot values below (Jeff's VPS,
+`170-9-253-4.sslip.io`, Let's Encrypt). Leave the last block commented out so you see each
+consent screen yourself. Allowlist and caps are the defaults; public egress is off by default
+(the kill switch on Control starts off: `public_egress: false`).
 
 ```
-# Your gateway's endpoint ID (64 hex characters)
-SPIKE_GATEWAY_ENDPOINT_ID=
-# The one relay this device may use, e.g. https://relay.example.org/
-SPIKE_RELAY_ALLOW_URL=
-# Sites traffic may reach: host:443, comma separated
-SPIKE_EGRESS_ALLOWLIST=
-# Where the on/off switch is read from (sent with your setup details)
-SPIKE_EGRESS_STATE_URL=
+# Pilot Gateway endpoint ID (fresh server key, not the dev key)
+SPIKE_GATEWAY_ENDPOINT_ID=218c4864f8a99e38329c103172957cfc0185590f05b34997156240d02b3acdc7
+# The one relay this device may use (also used to reach the Gateway)
+SPIKE_RELAY_ALLOW_URL=https://170-9-253-4.sslip.io/
+# Control (exposes only /health, GET /v1/egress/state, POST /v1/tickets/verify)
+CONTROL_URL=https://control.170-9-253-4.sslip.io
+# Sites traffic may reach: host:443, comma separated (allowlist version 27b285b4…2bc1)
+SPIKE_EGRESS_ALLOWLIST=echo.170-9-253-4.sslip.io:443
+# Where the on/off switch is read from
+SPIKE_EGRESS_STATE_URL=https://control.170-9-253-4.sslip.io/v1/egress/state
 # Daily byte cap (default 50000000)
 #SPIKE_EGRESS_BYTE_CAP=50000000
 
@@ -68,6 +65,19 @@ sudo docker run -d --name peer --restart unless-stopped \
 
 If a setting is missing the container exits right away; `sudo docker logs peer` names the
 problem (for example `a4_refuse_relay_config:<unset>` = no relay URL).
+### First run: register the device ID
+
+On first start the Peer creates its key in `/data` and logs its ID:
+
+```
+sudo docker logs peer 2>&1 | grep iroh_endpoint_id
+# peer iroh_endpoint_id=<64 hex characters>
+```
+
+Send that ID to Jeff, who passes it to Platform to add to `/opt/stream-pilot/peer_endpoints.txt`
+on the relay server. Until it is listed, the relay refuses this device (only listed devices are
+admitted). Nothing else needs to change; the Peer retries on its own.
+
 The device ID stays the same across restarts and upgrades as long as you keep the `peer-data`
 volume. Deleting the volume creates a new ID.
 
