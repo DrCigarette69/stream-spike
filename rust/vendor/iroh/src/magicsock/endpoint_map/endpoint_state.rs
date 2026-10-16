@@ -613,6 +613,8 @@ impl EndpointState {
         #[cfg(any(test, feature = "test-utils"))]
         if self.path_selection == PathSelection::RelayOnly {
             trace!("RelayOnly: not sending call-me-maybe");
+            // Keep the HEARTBEAT_INTERVAL rate limit: without this, every send re-runs send_pings.
+            self.last_call_me_maybe = Some(now);
             return msgs;
         }
 

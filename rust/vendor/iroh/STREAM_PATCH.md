@@ -16,7 +16,7 @@ The remote treats it as a hole-punch request, and it carries our direct addresse
 ```diff
 --- a/src/magicsock/endpoint_map/endpoint_state.rs (crates.io iroh 0.95.1)
 +++ b/src/magicsock/endpoint_map/endpoint_state.rs (rust/vendor/iroh)
-@@ -608,6 +608,14 @@
+@@ -608,6 +608,16 @@
          // accepts the connection.
          let mut msgs = self.send_pings(now);
  
@@ -25,6 +25,8 @@ The remote treats it as a hole-punch request, and it carries our direct addresse
 +        #[cfg(any(test, feature = "test-utils"))]
 +        if self.path_selection == PathSelection::RelayOnly {
 +            trace!("RelayOnly: not sending call-me-maybe");
++            // Keep the HEARTBEAT_INTERVAL rate limit: without this, every send re-runs send_pings.
++            self.last_call_me_maybe = Some(now);
 +            return msgs;
 +        }
 +
@@ -33,12 +35,13 @@ The remote treats it as a hole-punch request, and it carries our direct addresse
              msgs.push(PingAction::SendCallMeMaybe {
 ```
 
-## Not from call-me-maybe: the Peer-side RelayOnly warning
+## Why it also sets `last_call_me_maybe`
 
-The Peer's log line `in \`RelayOnly\` mode, ignoring request to respond to a hole punching attempt.`
-(`endpoint_state.rs:657` in this vendored copy) comes from `send_pings`, which the Peer's **own** 5 s
-heartbeat (`stayin_alive`) calls. It isn't triggered by a call-me-maybe from the Gateway, so it keeps appearing
-after this patch. It's harmless: RelayOnly returns before any UDP ping is sent.
+`send_call_me_maybe` is rate-limited by `last_call_me_maybe` (one per `HEARTBEAT_INTERVAL`). The first
+version of this patch returned before setting it, so the limit never engaged and every send
+(`prepare_send` → `get_send_addrs`) re-ran `send_pings`, which logs `in \`RelayOnly\` mode, ignoring request
+to respond to a hole punching attempt.` each time (~1/s per remote). Setting it before the return restores
+upstream pacing; nothing is sent either way.
 
 ## How to remove it (e.g. after the iroh bump, ALPHA4 slice A4.R)
 
