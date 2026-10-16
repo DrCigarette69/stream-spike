@@ -166,6 +166,18 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
 - **Open: OCI ingress for TCP 80/443** must be opened in the console. That's Jeff's action. Until then, LE issuance and Peer access from outside won't work.
 - Access details for the VPS stay out of the repo.
 
+## A4.R reconnect contract (DRAFT, 2026-10-16 CT)
+
+**Gateway (OPEN).** `egress_off` is a state, not an error. With the kill switch off, the session stays up and idle, and each stream is refused with `egress_off`. The Gateway never sends an ERR frame and never closes QUIC because the kill switch is off. Status: **OPEN**, pending Platform's close-reason finding. We saw about 52 redials in 2 minutes against vps-1 between 4:16 and 4:29 PM CT on 2026-10-16.
+
+**Peer (DONE).**
+- Backoff, as implemented in `8f975dc`: exponential with full jitter. Base is 2 s (`SPIKE_REDIAL_BASE_MS`), floor base/2, cap 5 min (`SPIKE_REDIAL_CAP_MS`). The attempt count resets after a session has been up for 60 s (`SPIKE_REDIAL_RESET_SECS`). Each redial logs `redial attempt=N redial_in_ms=M after=<end_reason>`. There is no redial after `kill`, `force_disconnect`, `cleared_ack` or `consent_withdrawn`.
+- Session end, as implemented in `fa935fa`: `session_end end_reason=… closed_by=local|remote`, plus the QUIC `close_code`/`close_reason` when the remote closed.
+
+**Vendored iroh (Platform fixing).** `last_call_me_maybe` must be set *before* the RelayOnly early return. My earlier review of the vendored patch missed this.
+
+**Checks.** The a4 roll-up runs `peer_reconnect_check` over the a42–a44 Peer logs (see [LOCAL_ASSERTS.md](LOCAL_ASSERTS.md) A4.8). It enforces end_reason and closed_by on every `session_end`, a redial line before every reconnect, `redial_in_ms` ≥ base/2, attempt numbers that don't go down, and no redial after a terminal reason. It reports PENDING (not FAIL) while the Peer image predates `fa935fa`.
+
 ## Risks / open questions
 
 1. **Where the relay (and Gateway + Control) run.** Jeff's box vs a small VPS. Peers on home networks must reach the relay and Control over the internet; this box isn't reachable from outside. Proposal: relay + Gateway + Control on one small VPS, TLS via Let's Encrypt on a hostname we own, Gateway client/admin bound to localhost (SSH tunnel). Needs Jeff's call and a domain.
