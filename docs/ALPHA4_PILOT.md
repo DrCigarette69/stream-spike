@@ -141,6 +141,22 @@ SPIKE_ISP_ACK_VERSION=<v> SPIKE_IROH_KEY_PATH=<per-device> stream-peer
 
 Done = A4.0–A4.8 green on one tip with every existing green unchanged, then A4.9 signed off by Jeff.
 
+## Pinned pilot hosts (DRAFT, 2026-10-16 CT)
+
+Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still applies). Not locked until the Stream Dev review.
+
+| What | Value |
+|---|---|
+| VPS | Jeff's VPS, public IPv4 `170.9.253.4`, x86_64 Ubuntu |
+| Relay + Gateway + Control host | `170-9-253-4.sslip.io` (dashed form), TLS via Let's Encrypt, certs always verified |
+| `SPIKE_RELAY_ALLOW_URL` | `https://170-9-253-4.sslip.io/` (the runbook's `https://<hostname>/` form: one URL, https, default port 443) |
+| Egress echo test host | `echo.170-9-253-4.sslip.io:443` (the `echo.<ip>.sslip.io` name from the A4.1 amendment, self-hosted on the same VPS) |
+
+- The IP embedded in an sslip name must equal the pinned IP `170.9.253.4`. `EgressAllow::pin(host, port)` / Python `.pin()` returns the embedded IP and never asks DNS. An explicit `=IP` that differs → `egress_pin_mismatch` at parse time. A matching explicit pin (`echo.170-9-253-4.sslip.io:443=170.9.253.4`) is allowed but not needed.
+- The default allowlist and caps stay as they are (50 MB/day/Peer, ≤2 concurrent streams) until Jeff answers risks 2 and 9. This section doesn't add `example.com:443` or any other host.
+- The kill switch is off by default: `SPIKE_PUBLIC_EGRESS` unset means no public egress. It is turned on only for the A4.9 run.
+- Access details for the VPS stay out of the repo.
+
 ## Risks / open questions
 
 1. **Where the relay (and Gateway + Control) run.** Jeff's box vs a small VPS. Peers on home networks must reach the relay and Control over the internet; this box isn't reachable from outside. Proposal: relay + Gateway + Control on one small VPS, TLS via Let's Encrypt on a hostname we own, Gateway client/admin bound to localhost (SSH tunnel). Needs Jeff's call and a domain.
