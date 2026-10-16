@@ -87,7 +87,27 @@ pub fn path_counters(ep: &Endpoint) -> serde_json::Value {
         "none"
     };
     serde_json::json!({"path": path, "relay_send": relay_send, "relay_recv": relay_recv,
-                       "udp_send": udp_send, "udp_recv": udp_recv})
+                       "udp_send": udp_send, "udp_recv": udp_recv,
+                       "hole_punch_attempts": hole_punch_attempts(ep)})
+}
+
+/// Hole-punch attempts we started: call-me-maybe sent (any path) + disco sent over UDP.
+/// Must stay 0 in iroh_pilot (RelayOnly + vendor/iroh patch).
+#[cfg(feature = "iroh_pilot")]
+pub fn hole_punch_attempts(ep: &Endpoint) -> u64 {
+    let m = &ep.metrics().magicsock;
+    m.sent_disco_call_me_maybe.get() + m.send_disco_udp.get()
+}
+
+/// Logs `gateway hole_punch attempts=N` at start and every 30 s.
+#[cfg(feature = "iroh_pilot")]
+pub fn spawn_hole_punch_log(ep: Endpoint) {
+    tokio::spawn(async move {
+        loop {
+            println!("gateway hole_punch attempts={}", hole_punch_attempts(&ep));
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
 }
 
 #[cfg(not(feature = "iroh_pilot"))]

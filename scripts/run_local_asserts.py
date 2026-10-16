@@ -859,7 +859,7 @@ A4_TIMING_GREPS = (
 )
 # Gateway-side UDP datagram counters stay 0 under RelayOnly.
 A4_UDP_ZERO_GREPS = (
-    ("a42", "OK relay-only connection (real stream-peer): gateway {'path': 'relay'", "'udp_recv': 0, 'udp_send': 0"),
+    ("a42", "OK relay-only connection (real stream-peer): gateway {", "'udp_recv': 0, 'udp_send': 0"),
     ("a44", "OK no UDP datagrams: gateway iroh_path", "'udp_recv': 0, 'udp_send': 0"),
 )
 A4_NOROUTE_GREPS = (
@@ -1051,6 +1051,9 @@ def a4_check_evidence(outs, pending):
         if not hit or not all(zero in l for l in hit):
             raise SystemExit(f"FAIL a4: {tag} gateway UDP counters not 0 under RelayOnly: {hit[:1]}")
         print(f"OK [{tag}] gateway UDP datagram counters 0/0 under RelayOnly", flush=True)
+        if not all("'path': 'relay'" in l and "'hole_punch_attempts': 0" in l for l in hit):
+            raise SystemExit(f"FAIL a4: {tag} gateway path not relay or hole_punch_attempts != 0: {hit[:1]}")
+        print(f"OK [{tag}] gateway path=relay, hole_punch_attempts=0", flush=True)
     # Peer side must log real counters (`udp_counters total=0 ...`); Gateway 0/0 alone isn't enough.
     # `(?<!no )`: a45's evidence line says "no udp_counters_unavailable"; that is not a Peer unavailable line.
     # a44 run B's deliberate watcher trip (fake UDP hook) is a refusal line, not a counter line.

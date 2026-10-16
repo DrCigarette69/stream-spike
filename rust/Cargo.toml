@@ -14,3 +14,8 @@ iroh = { version = "=0.95.1", default-features = false }
 # A4.2 self-hosted relay (Platform): server lib/bin, same 0.95.1 that iroh/test-utils already pulls.
 # Used only by stream-relay behind its `server` feature; the default build does not compile it.
 iroh-relay = { version = "=0.95.1", default-features = false, features = ["server"] }
+
+# A4.2: iroh 0.95.1 with one patch: no call-me-maybe in PathSelection::RelayOnly
+# (vendor/iroh/STREAM_PATCH.md). Same version, so Cargo.lock only changes its source.
+[patch.crates-io]
+iroh = { path = "vendor/iroh" }

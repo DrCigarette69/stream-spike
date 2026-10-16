@@ -78,6 +78,8 @@ async fn main() {
                     ep.id(),
                     p.relay_url
                 );
+                #[cfg(feature = "iroh_pilot")]
+                iroh_local::spawn_hole_punch_log(ep.clone());
             } else {
                 println!(
                     "IROH_LOCAL_READY endpoint_id={} direct_addr={}",
