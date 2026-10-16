@@ -18,6 +18,7 @@ pub struct Backoff {
     reset_after: Duration,
     attempt: u32,
     rng: u64,
+    reset_pending: bool,
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -27,7 +28,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 impl Backoff {
     pub fn new(base_ms: u64, cap_ms: u64, reset_after: Duration, seed: u64) -> Self {
         let base_ms = base_ms.max(1);
-        Backoff { base_ms, cap_ms: cap_ms.max(base_ms), reset_after, attempt: 0, rng: seed | 1 }
+        Backoff { base_ms, cap_ms: cap_ms.max(base_ms), reset_after, attempt: 0, rng: seed | 1, reset_pending: false }
     }
 
     pub fn from_env() -> Self {
@@ -77,7 +78,13 @@ impl Backoff {
     pub fn session_ended(&mut self, up_for: Duration) {
         if up_for >= self.reset_after {
             self.attempt = 0;
+            self.reset_pending = true;
         }
+    }
+
+    /// True once after a stable-session reset (for `reset=1` on the next redial line).
+    pub fn take_reset(&mut self) -> bool {
+        std::mem::take(&mut self.reset_pending)
     }
 
     pub fn attempt(&self) -> u32 {
@@ -140,9 +147,12 @@ mod tests {
         assert_eq!(b.attempt(), 5);
         b.session_ended(Duration::from_secs(59));
         assert_eq!(b.attempt(), 5);
+        assert!(!b.take_reset());
         assert_eq!(b.next_delay().0, 6);
         b.session_ended(Duration::from_secs(60));
         assert_eq!(b.attempt(), 0);
+        assert!(b.take_reset());
+        assert!(!b.take_reset(), "reset flag is one-shot");
         assert_eq!(b.next_delay().0, 1);
     }
 

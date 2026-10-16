@@ -91,13 +91,15 @@ fn session_end_line_carries_reason_side_close_and_counters() {
     let close = close_suffix(Some((Some(7), "egress off".into())));
     assert_eq!(close.as_deref(), Some("close_code=7 close_reason=egress_off"));
     assert_eq!(
-        session_end_line("remote_closed", "remote", close.as_deref(), udp),
-        format!("session_end end_reason=remote_closed closed_by=remote close_code=7 close_reason=egress_off {udp}")
+        session_end_line("remote_closed", "remote", close.as_deref(), 1234, udp),
+        format!("session_end end_reason=remote_closed closed_by=remote close_code=7 close_reason=egress_off up_ms=1234 {udp}")
     );
     assert_eq!(close_suffix(Some((Some(0), String::new()))).as_deref(), Some("close_code=0 close_reason=-"));
     assert_eq!(close_suffix(Some((None, "timed out".into()))).as_deref(), Some("close_error=timed_out"));
     assert_eq!(close_suffix(None), None);
-    assert_eq!(session_end_line("kill", "local", None, udp), format!("session_end end_reason=kill closed_by=local {udp}"));
+    assert_eq!(session_end_line("kill", "local", None, 0, udp), format!("session_end end_reason=kill closed_by=local up_ms=0 {udp}"));
+    assert_eq!(redial_line(3, 6100, false, "remote_closed"), "redial attempt=3 redial_in_ms=6100 after=remote_closed");
+    assert_eq!(redial_line(1, 1500, true, "tunnel_msg:ERR"), "redial attempt=1 redial_in_ms=1500 reset=1 after=tunnel_msg:ERR");
 }
 
 #[test]

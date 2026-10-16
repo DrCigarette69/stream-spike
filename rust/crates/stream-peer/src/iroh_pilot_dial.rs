@@ -236,9 +236,10 @@ pub async fn dial_loop(
             }
         };
         let (reason, by) = end_desc.unwrap_or(("unknown".to_string(), "local"));
-        backoff.session_ended(up_since.elapsed());
+        let up = up_since.elapsed();
+        backoff.session_ended(up);
         let close = close_suffix(conn.close_reason().map(|e| close_parts(&e)));
-        eprintln!("peer iroh_pilot {}", session_end_line(&reason, by, close.as_deref(), &counters_line(udp)));
+        eprintln!("peer iroh_pilot {}", session_end_line(&reason, by, close.as_deref(), up.as_millis() as u64, &counters_line(udp)));
         let _ = slot.kill("session_end").await;
         conn.close(VarInt::from_u32(0), b"session_end");
         mark_offline(state).await;
@@ -275,8 +276,9 @@ pub(crate) fn user_stop_reason(reason: &str) -> bool {
 
 /// Every other end: back off (never an immediate redial), logging attempt + redial_in_ms.
 async fn redial_wait(backoff: &mut crate::redial::Backoff, after: &str) {
+    let reset = backoff.take_reset();
     let (attempt, ms) = backoff.next_delay();
-    eprintln!("peer iroh_pilot redial attempt={attempt} redial_in_ms={ms} after={after}");
+    eprintln!("peer iroh_pilot {}", redial_line(attempt, ms, reset, after));
     sleep(Duration::from_millis(ms)).await;
 }
 
@@ -301,11 +303,17 @@ pub(crate) fn close_suffix(parts: Option<(Option<u64>, String)>) -> Option<Strin
 }
 
 /// One `session_end` line: reason, side, optional QUIC close, then the UDP counters.
-pub(crate) fn session_end_line(reason: &str, closed_by: &str, close: Option<&str>, counters: &str) -> String {
+pub(crate) fn session_end_line(reason: &str, closed_by: &str, close: Option<&str>, up_ms: u64, counters: &str) -> String {
     match close {
-        Some(c) => format!("session_end end_reason={reason} closed_by={closed_by} {c} {counters}"),
-        None => format!("session_end end_reason={reason} closed_by={closed_by} {counters}"),
+        Some(c) => format!("session_end end_reason={reason} closed_by={closed_by} {c} up_ms={up_ms} {counters}"),
+        None => format!("session_end end_reason={reason} closed_by={closed_by} up_ms={up_ms} {counters}"),
     }
+}
+
+/// `redial attempt=N redial_in_ms=M[ reset=1] after=<reason>`.
+pub(crate) fn redial_line(attempt: u32, ms: u64, reset: bool, after: &str) -> String {
+    let r = if reset { " reset=1" } else { "" };
+    format!("redial attempt={attempt} redial_in_ms={ms}{r} after={after}")
 }
 
 #[cfg(test)]
