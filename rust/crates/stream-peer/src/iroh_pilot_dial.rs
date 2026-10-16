@@ -254,11 +254,29 @@ pub async fn dial_loop(
         let (reason, by) = end_desc.unwrap_or(("unknown".to_string(), "local"));
         let up = up_since.elapsed();
         backoff.session_ended(up);
-        let close = close_suffix(conn.close_reason().map(|e| close_parts(&e)));
+        let close_p = conn.close_reason().map(|e| close_parts(&e));
+        // A refusal can arrive as AUTH_REJECT or as the Gateway's QUIC close reason.
+        let capped = cap_refusal(end.as_deref(), close_p.as_ref().map(|(_, t)| t.as_str()));
+        let (reason, by) = match capped {
+            Some(code) => (format!("auth_reject:{code}"), "remote"),
+            None => (reason, by),
+        };
+        let close = close_suffix(close_p);
         eprintln!("peer iroh_pilot {}", session_end_line(&reason, by, close.as_deref(), up.as_millis() as u64, &counters_line(udp)));
         let _ = slot.kill("session_end").await;
         conn.close(VarInt::from_u32(0), b"session_end");
         mark_offline(state).await;
+        if let Some(code) = capped {
+            // P8 rule: no auto-retry after peer_id_in_use / endpoint_mismatch; back off to the cap.
+            eprintln!("peer iroh_pilot AUTH_REJECT {code}: closed, backing off to cap");
+            set_error(state, code).await;
+            offline::system_offline(state, code).await;
+            let reset = backoff.take_reset();
+            let (attempt, ms) = backoff.jump_to_cap();
+            eprintln!("peer iroh_pilot {}", redial_line(attempt, ms, reset, &reason));
+            sleep(Duration::from_millis(ms)).await;
+            continue;
+        }
         debug_assert_eq!(retry_after(end.as_deref()), end.is_none());
         match end {
             Some(why) if why == RELAY_PATH_REQUIRED => {
@@ -283,6 +301,17 @@ pub async fn dial_loop(
             }
         }
     }
+}
+
+/// Gateway refusals that back off straight to the cap (P8 keys of the same name).
+pub(crate) const CAP_REFUSALS: [&str; 2] = ["peer_id_in_use", "endpoint_mismatch"];
+
+/// The cap refusal named by an AUTH_REJECT reason or the QUIC close reason, if any.
+pub(crate) fn cap_refusal(reject: Option<&str>, close_reason: Option<&str>) -> Option<&'static str> {
+    [reject, close_reason]
+        .into_iter()
+        .flatten()
+        .find_map(|r| CAP_REFUSALS.into_iter().find(|c| r.trim() == *c))
 }
 
 /// User-initiated stops keep their no-redial behaviour (no backoff, gate holds).

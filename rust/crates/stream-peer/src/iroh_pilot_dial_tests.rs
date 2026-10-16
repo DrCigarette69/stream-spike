@@ -111,3 +111,25 @@ fn user_stops_do_not_redial_everything_else_backs_off() {
         assert!(!user_stop_reason(r), "{r}");
     }
 }
+
+#[test]
+fn cap_refusals_from_auth_reject_or_close_reason() {
+    assert_eq!(cap_refusal(Some("peer_id_in_use"), None), Some("peer_id_in_use"));
+    assert_eq!(cap_refusal(None, Some("peer_id_in_use")), Some("peer_id_in_use"));
+    assert_eq!(cap_refusal(Some("endpoint_mismatch"), None), Some("endpoint_mismatch"));
+    assert_eq!(cap_refusal(None, Some("endpoint_mismatch")), Some("endpoint_mismatch"));
+    assert_eq!(cap_refusal(Some("gateway_mismatch"), Some("session_end")), None);
+    assert_eq!(cap_refusal(None, None), None);
+}
+
+#[test]
+fn cap_refusals_have_p8_copy_and_never_show_the_code() {
+    for code in CAP_REFUSALS {
+        let ux = crate::a4_copy::p8_user_facing(code);
+        assert!(!ux.contains(code), "raw code shown: {ux}");
+        let line = crate::a4_copy::p8_reason_line(code).expect("reason line");
+        assert_ne!(line, crate::a4_copy::p8_reason_line("connection_lost").unwrap(), "{code} must not fall back");
+        assert!(ux.contains(&line));
+    }
+    assert!(crate::a4_copy::p8_reason_line("peer_id_in_use").unwrap().contains("already running for this device"));
+}

@@ -74,6 +74,17 @@ impl Backoff {
         (self.attempt, ms)
     }
 
+    /// Terminal refusal (peer_id_in_use / endpoint_mismatch): no fast redials, wait the cap.
+    /// Moves the attempt counter to where the ceiling reaches the cap; returns (attempt, cap_ms).
+    pub fn jump_to_cap(&mut self) -> (u32, u64) {
+        let mut n = self.attempt.max(1);
+        while self.ceiling_ms(n) < self.cap_ms && n < 64 {
+            n += 1;
+        }
+        self.attempt = n;
+        (n, self.cap_ms)
+    }
+
     /// Call at every session end with how long it was up; resets only after a stable session.
     pub fn session_ended(&mut self, up_for: Duration) {
         if up_for >= self.reset_after {
@@ -154,6 +165,18 @@ mod tests {
         assert!(b.take_reset());
         assert!(!b.take_reset(), "reset flag is one-shot");
         assert_eq!(b.next_delay().0, 1);
+    }
+
+    #[test]
+    fn jump_to_cap_waits_full_cap_and_stays_there() {
+        let mut b = bo();
+        assert_eq!(b.jump_to_cap(), (9, 300_000)); // 2s * 2^8 = 512s > cap at attempt 9
+        assert_eq!(b.ceiling_ms(b.attempt()), 300_000);
+        let (n, ms) = b.next_delay();
+        assert_eq!(n, 10);
+        assert!(ms >= 1_000 && ms <= 300_000);
+        b.session_ended(Duration::from_secs(1)); // a quick refusal again: no reset
+        assert_eq!(b.jump_to_cap(), (10, 300_000), "never moves back down");
     }
 
     #[test]

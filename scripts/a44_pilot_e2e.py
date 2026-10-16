@@ -15,7 +15,7 @@ a42/a43 smoke helpers (same /tmp/stream-spike-a42.lock, waits for it).
      Peer P8 egress_off
   4. Peer restart (SIGTERM) keeps bytes_today (persistent budget); a Control ticket for key A
      sent to the Peer restarted on key B -> `peer iroh_pilot AUTH_REJECT endpoint_mismatch:
-     closed, not retrying`, one connect, no redial for >= 4 s
+     closed, backing off to cap`, one connect, no redial for >= 4 s
   5. a4_local hook SPIKE_A4_FAKE_UDP_DATAGRAMS=1 -> exact P8 relay_path_required line <= 2 s,
      `not retrying`, no redial
 Prints A44_PILOT_E2E_OK.
@@ -31,7 +31,7 @@ P8_RELAY = next(c for c in json.load(open(A.ROOT / "fixtures" / "screens.json"))
                 if "reason_lines" in c)["reason_lines"]["relay_path_required"]
 PEER_ADMIN = "http://127.0.0.1:9200"
 # Real Peer endpoint counters (iroh/metrics, c219b65): all four must be 0; `unavailable` FAILs.
-MISMATCH_LINE = "peer iroh_pilot AUTH_REJECT endpoint_mismatch: closed, not retrying"
+MISMATCH_LINE = "peer iroh_pilot AUTH_REJECT endpoint_mismatch: closed, backing off to cap"
 TRIP_LINE = "a4_refuse_relay_path_required:udp_datagrams:1"
 UDP_ZERO = "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0"
 
