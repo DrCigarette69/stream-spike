@@ -8,6 +8,12 @@ settings: each device's identity key and daily byte counter live in a Docker vol
 `/data`. The status page listens only inside the container (127.0.0.1:9200), so use
 `docker exec` to reach it.
 
+## 0. Install Docker
+
+On a fresh Ubuntu device: `sudo apt-get update && sudo apt-get install -y docker.io`, then
+`sudo systemctl enable --now docker`. Keep the default unix socket only (no `-H tcp://`, nothing
+on 2375/2376), and don't add your user to the `docker` group; every command below uses `sudo docker`.
+
 ## 1. Get the image
 
 On a build box with the repo:
@@ -20,6 +26,11 @@ sudo docker save peer-pilot:amd64 | gzip > peer-pilot-amd64.tar.gz
 Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`.
 Compare `sudo docker image inspect -f '{{.Id}}' peer-pilot:amd64` with the ID above
 (`sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`).
+
+Note: Docker 29+ (containerd image store, the Ubuntu 26.04 default) shows the *manifest* digest
+as the image ID instead, so the ID differs. Check the config digest instead:
+`sudo ctr -n moby content get <shown ID> | grep -o '"config":{[^}]*'` must name the ID above.
+The tar may also load untagged; tag it with `sudo docker tag <shown ID> peer-pilot:amd64`.
 
 ## 2. Settings file
 
