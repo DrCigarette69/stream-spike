@@ -219,6 +219,8 @@ and `insecure_skip_relay_cert_verify` absent from the binary, no key/budget in a
 non-root, key 0600 in `/data`, runs healthy with `--network none`, same endpoint id after
 restart. Metrics check: the image logs `udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0
 recv_v6=0` after bind and never `udp_counters_unavailable`. Docker only via `-H unix:///var/run/docker.sock`; refuses if DOCKER_HOST is not unix://.
-Pilot ships amd64 only (both pilot devices are x86_64): `peer-pilot:amd64`
-`sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`.
+Pilot ships amd64 only (both pilot devices are x86_64). Approved image, pinned by ID (never by
+the `peer-pilot:amd64` tag): `sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`. Install/run
+reference that ID; `a45` checks it with `SPIKE_PEER_IMAGE_ID` and prints `A45_IMAGE_ID=<id>`. A new
+ID replaces it only after `a45` passes on it and the room agrees.
 Install steps for the pilot devices: `docs/PEER_PILOT_INSTALL.md`.

@@ -1,7 +1,11 @@
 # Pilot Peer install (A4.5)
 
-For the two pilot Linux devices. **amd64 only**: both pilot devices are x86_64. The pilot image is
-`peer-pilot:amd64`, ID `sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`.
+For the two pilot Linux devices. **amd64 only**: both pilot devices are x86_64.
+
+**Approved pilot image ID: `sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`.**
+The image is pinned by ID, never by tag: `peer-pilot:amd64` is only a convenience name and a
+rebuild can silently move it. Every load/verify/run below uses the ID. A new ID replaces this one
+only after `a45` passes on it (`SPIKE_PEER_IMAGE_ID=<new id>`) and the room agrees.
 
 The image is built from `rust/crates/stream-peer/Dockerfile.pilot`. It contains no key and no
 settings: each device's identity key and daily byte counter live in a Docker volume mounted at
@@ -20,17 +24,21 @@ On a build box with the repo:
 
 ```
 sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:amd64 rust/
-sudo docker save peer-pilot:amd64 | gzip > peer-pilot-amd64.tar.gz
+sudo docker image inspect -f '{{.Id}}' sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a   # must succeed
+sudo docker save sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a | gzip > peer-pilot-amd64.tar.gz
 ```
 
-Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`.
-Compare `sudo docker image inspect -f '{{.Id}}' peer-pilot:amd64` with the ID above
-(`sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`).
+(Or run `SPIKE_PEER_IMAGE_ID=sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a python3 scripts/a45_peer_package_smoke.py`,
+which FAILs if the build isn't that ID and prints `A45_IMAGE_ID=<id>`.)
+
+Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`
+and verify by ID: `sudo docker image inspect -f '{{.Id}}' sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`
+must print that same ID. Don't verify via the tag.
 
 Note: Docker 29+ (containerd image store, the Ubuntu 26.04 default) shows the *manifest* digest
 as the image ID instead, so the ID differs. Check the config digest instead:
 `sudo ctr -n moby content get <shown ID> | grep -o '"config":{[^}]*'` must name the ID above.
-The tar may also load untagged; tag it with `sudo docker tag <shown ID> peer-pilot:amd64`.
+In that case run by the shown (manifest) ID once its config digest is confirmed; the tag is optional.
 
 ## 2. Settings file
 
@@ -71,8 +79,11 @@ sudo docker volume create peer-data
 sudo docker run -d --name peer --restart unless-stopped \
   --env-file /etc/peer-pilot.env \
   -v peer-data:/data \
-  peer-pilot:amd64
+  sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a
 ```
+
+(Docker 29+: use the manifest ID you confirmed in step 1.) Check what is running:
+`sudo docker inspect -f '{{.Image}}' peer` must print the approved ID.
 
 If a setting is missing the container exits right away; `sudo docker logs peer` names the
 problem (for example `a4_refuse_relay_config:<unset>` = no relay URL).

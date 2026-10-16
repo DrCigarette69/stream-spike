@@ -17,6 +17,8 @@ the image (amd64 only for now):
 Never reaches the public internet at test time (all runs are --network none; the build itself
 pulls crates like the compose images do). Cleans up its containers + volume; keeps the image
 tag (rebuilds reuse the layer cache).
+Prints A45_IMAGE_ID=<id>. If SPIKE_PEER_IMAGE_ID is set, FAILs unless the image is that ID
+(or, on Docker 29 containerd store, its config digest is).
 SKIP (exit 0) when docker or `sudo -n` is unavailable, unless SPIKE_A4=1 (then FAIL).
 Docker is only ever talked to over the local unix socket (`-H unix:///var/run/docker.sock`);
 the smoke refuses to run when DOCKER_HOST points anywhere else (e.g. a tcp:// engine).
@@ -26,6 +28,9 @@ import json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TAG = os.environ.get("SPIKE_A45_TAG", "peer-pilot:amd64")
+# Optional pin: approved image ID (sha256:...). When set, a45 FAILs unless the built/loaded image
+# is that ID (directly, or as the config digest under Docker 29's containerd store).
+WANT_ID = os.environ.get("SPIKE_PEER_IMAGE_ID", "").strip()
 DOCKER_SOCK = "unix:///var/run/docker.sock"
 DOCKER = ["sudo", "-n", "docker", "-H", DOCKER_SOCK]
 NAME = f"a45-peer-{os.getpid()}"
@@ -112,6 +117,25 @@ def check_layers():
     print("a45: no key/budget file in any image layer", flush=True)
 
 
+def check_image_id(shown):
+    print(f"A45_IMAGE_ID={shown}", flush=True)
+    if not WANT_ID:
+        return
+    if shown == WANT_ID:
+        print(f"a45: image ID matches SPIKE_PEER_IMAGE_ID", flush=True)
+        return
+    # Docker 29+ containerd store shows the manifest digest; the approved ID is the config digest.
+    r = subprocess.run(["sudo", "-n", "ctr", "-n", "moby", "content", "get", shown],
+                       capture_output=True, text=True, timeout=30)
+    m = re.search(r'"config":\{[^}]*"digest":"(sha256:[0-9a-f]{64})"', r.stdout or "")
+    if m:
+        print(f"A45_IMAGE_CONFIG_ID={m.group(1)}", flush=True)
+        if m.group(1) == WANT_ID:
+            print("a45: image config ID matches SPIKE_PEER_IMAGE_ID", flush=True)
+            return
+    fail(f"image ID {shown} != SPIKE_PEER_IMAGE_ID {WANT_ID}")
+
+
 def main():
     if not preflight():
         return 0
@@ -120,6 +144,7 @@ def main():
     print(f"a45: built {TAG} in {time.time() - t0:.0f}s", flush=True)
 
     info = json.loads(d("image", "inspect", TAG).stdout)[0]
+    check_image_id(info["Id"])
     cfg = info["Config"]
     env = dict(e.split("=", 1) for e in cfg.get("Env") or [])
     if cfg.get("User") != "10001:10001":
