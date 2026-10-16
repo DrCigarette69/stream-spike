@@ -209,7 +209,7 @@ pub async fn dial_loop(
                 offline::system_offline(state, CONNECTION_LOST).await;
                 sleep(Duration::from_secs(1)).await
             }
-            SessionEnd::Ended => {
+            SessionEnd::Ended(_) => {
                 offline::system_offline(state, CONNECTION_LOST).await;
                 eprintln!("peer offline {peer_id}");
                 sleep(Duration::from_millis(200)).await;

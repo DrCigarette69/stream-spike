@@ -18,10 +18,70 @@ use tokio::time::{Duration, Instant};
 pub enum SessionEnd {
     /// HELLO exchange failed; caller backs off 1 s and retries.
     Handshake,
-    /// Session ran and ended (kill, clear-ack, close, EOF, ERR).
-    Ended,
+    /// Session ran and ended (kill, clear-ack, close, EOF, ERR); why is in the reason.
+    Ended(EndReason),
     /// iroh_local only: Gateway sent AUTH_REJECT (e.g. `endpoint_mismatch`); do not retry.
     Rejected(String),
+}
+
+/// Why a running session ended (logged at `session_end` as `end_reason=` / `closed_by=`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndReason {
+    Kill,
+    ClearedAck,
+    ForceDisconnect,
+    ConsentWithdrawn,
+    CloseRequested,
+    WriteError,
+    ReadError,
+    RemoteClosed,
+    EmptyLine,
+    BadFrame,
+    TunnelMsg(String),
+}
+
+impl EndReason {
+    pub fn label(&self) -> String {
+        match self {
+            EndReason::Kill => "kill".into(),
+            EndReason::ClearedAck => "cleared_ack".into(),
+            EndReason::ForceDisconnect => "force_disconnect".into(),
+            EndReason::ConsentWithdrawn => "consent_withdrawn".into(),
+            EndReason::CloseRequested => "close_requested".into(),
+            EndReason::WriteError => "write_error".into(),
+            EndReason::ReadError => "read_error".into(),
+            EndReason::RemoteClosed => "remote_closed".into(),
+            EndReason::EmptyLine => "empty_line".into(),
+            EndReason::BadFrame => "bad_frame".into(),
+            EndReason::TunnelMsg(t) => format!("tunnel_msg:{t}"),
+        }
+    }
+    pub fn closed_by(&self) -> &'static str {
+        match self {
+            EndReason::Kill
+            | EndReason::ClearedAck
+            | EndReason::ForceDisconnect
+            | EndReason::ConsentWithdrawn
+            | EndReason::CloseRequested
+            | EndReason::BadFrame => "local",
+            EndReason::WriteError
+            | EndReason::ReadError
+            | EndReason::RemoteClosed
+            | EndReason::EmptyLine
+            | EndReason::TunnelMsg(_) => "remote",
+        }
+    }
+}
+
+impl SessionEnd {
+    /// (`end_reason`, `closed_by`) for the `session_end` log line.
+    pub fn describe(&self) -> (String, &'static str) {
+        match self {
+            SessionEnd::Handshake => ("handshake".into(), "local"),
+            SessionEnd::Rejected(why) => (format!("auth_reject:{why}"), "remote"),
+            SessionEnd::Ended(r) => (r.label(), r.closed_by()),
+        }
+    }
 }
 
 pub(crate) fn gateway_reject(transport: &str, msg: &Value) -> Option<String> {
@@ -127,24 +187,33 @@ where
     let mut lines = crate::frames::LineReader::new(reader);
     let mut last_hb = Instant::now() - Duration::from_secs(3600);
     let hb = Duration::from_secs_f64(heartbeat_s.max(0.5));
-    let mut end = SessionEnd::Ended;
+    let mut end = SessionEnd::Ended(EndReason::RemoteClosed);
 
     loop {
         {
             let g = state.read().await;
-            if g.kill_requested
-                || g.isp_ack_version.is_empty()
-                || g.force_disconnect
-                || (iroh_local && !g.p2_consent)
-                || (g.cfg.p9_required() && !g.p9_ack)
-            {
+            let stop = if g.kill_requested {
+                Some(EndReason::Kill)
+            } else if g.isp_ack_version.is_empty() {
+                Some(EndReason::ClearedAck)
+            } else if g.force_disconnect {
+                Some(EndReason::ForceDisconnect)
+            } else if (iroh_local && !g.p2_consent) || (g.cfg.p9_required() && !g.p9_ack) {
+                Some(EndReason::ConsentWithdrawn)
+            } else {
+                None
+            };
+            if let Some(r) = stop {
+                end = SessionEnd::Ended(r);
                 break;
             }
         }
         if close_rx.try_recv().is_ok() {
+            end = SessionEnd::Ended(EndReason::CloseRequested);
             break;
         }
         if flush_pilot_closes(state, &mut writer).await.is_err() {
+            end = SessionEnd::Ended(EndReason::WriteError);
             break;
         }
 
@@ -177,14 +246,19 @@ where
         let line = tokio::select! {
             r = lines.next_line() => match r {
                 Ok(Some(l)) => l,
-                Ok(None) => break,
+                Ok(None) => {
+                    end = SessionEnd::Ended(EndReason::RemoteClosed);
+                    break;
+                }
                 Err(e) => {
                     set_error(state, &e).await;
+                    end = SessionEnd::Ended(EndReason::ReadError);
                     break;
                 }
             },
             Some(f) = out_rx.recv() => {
                 if send_line(&mut writer, &f).await.is_err() {
+                    end = SessionEnd::Ended(EndReason::WriteError);
                     break;
                 }
                 // Drain whatever else is queued (bulk DATA) before the next read.
@@ -196,6 +270,7 @@ where
                     }
                 }
                 if gone {
+                    end = SessionEnd::Ended(EndReason::WriteError);
                     break;
                 }
                 continue;
@@ -203,12 +278,14 @@ where
             _ = tokio::time::sleep(Duration::from_millis(200)) => continue,
         };
         if line.is_empty() {
+            end = SessionEnd::Ended(EndReason::EmptyLine);
             break;
         }
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
                 set_error(state, &e.to_string()).await;
+                end = SessionEnd::Ended(EndReason::BadFrame);
                 break;
             }
         };
@@ -217,6 +294,8 @@ where
             break;
         }
         if handle_tunnel_msg(state, http, &mut writer, &msg).await {
+            let t = msg.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+            end = SessionEnd::Ended(EndReason::TunnelMsg(t.to_string()));
             break;
         }
     }
@@ -260,6 +339,26 @@ pub(crate) async fn flush_pilot_closes<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use super::{EndReason, SessionEnd};
+
+    #[test]
+    fn end_reason_labels_and_side() {
+        let cases = [
+            (SessionEnd::Ended(EndReason::Kill), "kill", "local"),
+            (SessionEnd::Ended(EndReason::ForceDisconnect), "force_disconnect", "local"),
+            (SessionEnd::Ended(EndReason::CloseRequested), "close_requested", "local"),
+            (SessionEnd::Ended(EndReason::BadFrame), "bad_frame", "local"),
+            (SessionEnd::Ended(EndReason::ReadError), "read_error", "remote"),
+            (SessionEnd::Ended(EndReason::RemoteClosed), "remote_closed", "remote"),
+            (SessionEnd::Ended(EndReason::TunnelMsg("ERR".into())), "tunnel_msg:ERR", "remote"),
+            (SessionEnd::Rejected("endpoint_mismatch".into()), "auth_reject:endpoint_mismatch", "remote"),
+            (SessionEnd::Handshake, "handshake", "local"),
+        ];
+        for (e, label, side) in cases {
+            assert_eq!(e.describe(), (label.to_string(), side), "{e:?}");
+        }
+    }
+
     use super::*;
 
     #[test]

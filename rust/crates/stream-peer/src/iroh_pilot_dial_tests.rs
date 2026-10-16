@@ -84,3 +84,18 @@ fn inbound_udp_disco_counts_and_trips() {
     assert_eq!((both.send_v4, both.send_v6, both.recv_v4, both.recv_v6, both.total()), (10, 20, 32, 40, 102));
     assert_eq!(fold_magicsock(0, 0, u64::MAX, 0, 5).recv_v4, u64::MAX, "saturating");
 }
+
+#[test]
+fn session_end_line_carries_reason_side_close_and_counters() {
+    let udp = "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0";
+    let close = close_suffix(Some((Some(7), "egress off".into())));
+    assert_eq!(close.as_deref(), Some("close_code=7 close_reason=egress_off"));
+    assert_eq!(
+        session_end_line("remote_closed", "remote", close.as_deref(), udp),
+        format!("session_end end_reason=remote_closed closed_by=remote close_code=7 close_reason=egress_off {udp}")
+    );
+    assert_eq!(close_suffix(Some((Some(0), String::new()))).as_deref(), Some("close_code=0 close_reason=-"));
+    assert_eq!(close_suffix(Some((None, "timed out".into()))).as_deref(), Some("close_error=timed_out"));
+    assert_eq!(close_suffix(None), None);
+    assert_eq!(session_end_line("kill", "local", None, udp), format!("session_end end_reason=kill closed_by=local {udp}"));
+}

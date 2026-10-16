@@ -217,20 +217,25 @@ pub async fn dial_loop(
         let session = session::run(state, handle, http, recv, send);
         tokio::pin!(watcher);
         tokio::pin!(session);
+        let mut end_desc: Option<(String, &'static str)> = None;
         let end = tokio::select! {
             v = &mut watcher => {
                 let _ = (&mut session).await; // transport killed: session ends promptly
+                end_desc = Some(if v.is_some() { ("left_relay".to_string(), "local") } else { ("path_watch_ended".to_string(), "local") });
                 if v.is_some() { Some(RELAY_PATH_REQUIRED.to_string()) } else { None }
             }
             e = &mut session => {
                 let _ = stop_tx.send(());
+                end_desc = Some(e.describe());
                 match e {
                     SessionEnd::Rejected(why) => Some(why),
-                    SessionEnd::Handshake | SessionEnd::Ended => None,
+                    SessionEnd::Handshake | SessionEnd::Ended(_) => None,
                 }
             }
         };
-        eprintln!("peer iroh_pilot session_end {}", counters_line(udp));
+        let (reason, by) = end_desc.unwrap_or(("unknown".to_string(), "local"));
+        let close = close_suffix(conn.close_reason().map(|e| close_parts(&e)));
+        eprintln!("peer iroh_pilot {}", session_end_line(&reason, by, close.as_deref(), &counters_line(udp)));
         let _ = slot.kill("session_end").await;
         conn.close(VarInt::from_u32(0), b"session_end");
         mark_offline(state).await;
@@ -252,6 +257,34 @@ pub async fn dial_loop(
                 sleep(Duration::from_secs(1)).await;
             }
         }
+    }
+}
+
+/// (code, reason) for an application close, else (None, debug text) for other errors.
+fn close_parts(e: &iroh::endpoint::ConnectionError) -> (Option<u64>, String) {
+    match e {
+        iroh::endpoint::ConnectionError::ApplicationClosed(a) => {
+            (Some(a.error_code.into_inner()), String::from_utf8_lossy(&a.reason).into_owned())
+        }
+        other => (None, format!("{other}")),
+    }
+}
+
+/// ` close_code=N close_reason=…` or ` close_error=…` (spaces in text become `_`), None if open.
+pub(crate) fn close_suffix(parts: Option<(Option<u64>, String)>) -> Option<String> {
+    let (code, text) = parts?;
+    let text = if text.is_empty() { "-".to_string() } else { text.split_whitespace().collect::<Vec<_>>().join("_") };
+    Some(match code {
+        Some(c) => format!("close_code={c} close_reason={text}"),
+        None => format!("close_error={text}"),
+    })
+}
+
+/// One `session_end` line: reason, side, optional QUIC close, then the UDP counters.
+pub(crate) fn session_end_line(reason: &str, closed_by: &str, close: Option<&str>, counters: &str) -> String {
+    match close {
+        Some(c) => format!("session_end end_reason={reason} closed_by={closed_by} {c} {counters}"),
+        None => format!("session_end end_reason={reason} closed_by={closed_by} {counters}"),
     }
 }
 

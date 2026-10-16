@@ -72,7 +72,7 @@ async fn relay_loop(state: SharedState, handle: RelayHandle, http: reqwest::Clie
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
-            SessionEnd::Ended | SessionEnd::Rejected(_) => {}
+            SessionEnd::Ended(_) | SessionEnd::Rejected(_) => {}
         }
         mark_offline(&state).await;
         offline::system_offline(&state, offline::CONNECTION_LOST).await;
