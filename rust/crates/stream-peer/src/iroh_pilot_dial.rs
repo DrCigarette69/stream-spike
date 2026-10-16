@@ -174,6 +174,7 @@ pub async fn dial_loop(
     udp: &dyn UdpCounterSource,
 ) -> Option<String> {
     let gw_id = EndpointId::from_str(&target.gateway_endpoint_id).ok()?;
+    let mut backoff = crate::redial::Backoff::from_env();
     loop {
         let (ack, p2, p9_req, p9, killed) = {
             let g = state.read().await;
@@ -192,7 +193,7 @@ pub async fn dial_loop(
                 set_error(state, &e).await;
                 mark_offline(state).await;
                 offline::system_offline(state, CONNECTION_LOST).await;
-                sleep(Duration::from_secs(1)).await;
+                redial_wait(&mut backoff, "dial_failed").await;
                 continue;
             }
         };
@@ -201,13 +202,14 @@ pub async fn dial_loop(
             other => {
                 set_error(state, &format!("iroh_open_bi_failed:{other:?}")).await;
                 conn.close(VarInt::from_u32(0), b"open_bi_failed");
-                sleep(Duration::from_secs(1)).await;
+                redial_wait(&mut backoff, "open_bi_failed").await;
                 continue;
             }
         };
         eprintln!("peer iroh_pilot connected gateway={} alpn={ALPN} via={}", conn.remote_id(), target.relay_url);
         eprintln!("peer iroh_pilot path {}", counters_line(udp));
         slot.set(Box::new(IrohConn(conn.clone()))).await;
+        let up_since = std::time::Instant::now();
         let mut ct = ep.conn_type(gw_id);
         let get = move || ct.as_mut().map(|w| path_kind(&w.get())).unwrap_or(PathKind::None);
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -234,6 +236,7 @@ pub async fn dial_loop(
             }
         };
         let (reason, by) = end_desc.unwrap_or(("unknown".to_string(), "local"));
+        backoff.session_ended(up_since.elapsed());
         let close = close_suffix(conn.close_reason().map(|e| close_parts(&e)));
         eprintln!("peer iroh_pilot {}", session_end_line(&reason, by, close.as_deref(), &counters_line(udp)));
         let _ = slot.kill("session_end").await;
@@ -254,10 +257,27 @@ pub async fn dial_loop(
             }
             None => {
                 offline::system_offline(state, CONNECTION_LOST).await;
-                sleep(Duration::from_secs(1)).await;
+                if user_stop_reason(&reason) {
+                    // P4 kill / force_disconnect / P1 cleared / consent withdrawn: no redial; the
+                    // dial gate at the loop top holds until the user turns sharing back on.
+                    continue;
+                }
+                redial_wait(&mut backoff, &reason).await;
             }
         }
     }
+}
+
+/// User-initiated stops keep their no-redial behaviour (no backoff, gate holds).
+pub(crate) fn user_stop_reason(reason: &str) -> bool {
+    matches!(reason, "kill" | "force_disconnect" | "cleared_ack" | "consent_withdrawn")
+}
+
+/// Every other end: back off (never an immediate redial), logging attempt + redial_in_ms.
+async fn redial_wait(backoff: &mut crate::redial::Backoff, after: &str) {
+    let (attempt, ms) = backoff.next_delay();
+    eprintln!("peer iroh_pilot redial attempt={attempt} redial_in_ms={ms} after={after}");
+    sleep(Duration::from_millis(ms)).await;
 }
 
 /// (code, reason) for an application close, else (None, debug text) for other errors.

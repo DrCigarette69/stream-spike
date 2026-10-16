@@ -99,3 +99,13 @@ fn session_end_line_carries_reason_side_close_and_counters() {
     assert_eq!(close_suffix(None), None);
     assert_eq!(session_end_line("kill", "local", None, udp), format!("session_end end_reason=kill closed_by=local {udp}"));
 }
+
+#[test]
+fn user_stops_do_not_redial_everything_else_backs_off() {
+    for r in ["kill", "force_disconnect", "cleared_ack", "consent_withdrawn"] {
+        assert!(user_stop_reason(r), "{r}");
+    }
+    for r in ["remote_closed", "tunnel_msg:ERR", "read_error", "handshake", "unknown", "path_watch_ended"] {
+        assert!(!user_stop_reason(r), "{r}");
+    }
+}

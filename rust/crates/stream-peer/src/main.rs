@@ -19,6 +19,7 @@ mod offline;
 mod pilot_egress;
 mod pilot_data;
 mod pilot_target;
+mod redial;
 mod relay_path;
 #[cfg(test)]
 mod pilot_target_tests;
