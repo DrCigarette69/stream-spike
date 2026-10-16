@@ -151,12 +151,19 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
 | Relay + Gateway + Control host | `170-9-253-4.sslip.io` (dashed form), TLS via Let's Encrypt, certs always verified |
 | `SPIKE_RELAY_ALLOW_URL` | `https://170-9-253-4.sslip.io/` (the runbook's `https://<hostname>/` form: one URL, https, default port 443) |
 | Egress echo test host | `echo.170-9-253-4.sslip.io:443` (the `echo.<ip>.sslip.io` name from the A4.1 amendment, self-hosted on the same VPS) |
+| Control (Peer-facing) | `control.170-9-253-4.sslip.io:443`, on its own name because the relay owns 443 on the bare name. Public surface is only `GET /health`, `GET /v1/egress/state` and `POST /v1/tickets/verify`. Everything else returns 404 |
+| `CONTROL_URL` | `https://control.170-9-253-4.sslip.io` |
+| `SPIKE_EGRESS_STATE_URL` | `https://control.170-9-253-4.sslip.io/v1/egress/state` |
 
 - The IP embedded in an sslip name must equal the pinned IP `170.9.253.4`. `EgressAllow::pin(host, port)` / Python `.pin()` returns the embedded IP and never asks DNS. An explicit `=IP` that differs → `egress_pin_mismatch` at parse time. A matching explicit pin (`echo.170-9-253-4.sslip.io:443=170.9.253.4`) is allowed but not needed.
 - The default allowlist and caps stay as they are (50 MB/day/Peer, ≤2 concurrent streams) until Jeff answers risks 2 and 9. This section doesn't add `example.com:443` or any other host.
 - The kill switch is off by default: `SPIKE_PUBLIC_EGRESS` unset means no public egress. It is turned on only for the A4.9 run.
 - Pilot devices: both are x86_64, so only the amd64 `peer-pilot` image ships. No arm64 image.
 - Stripe lane B (A4.6): `stripe listen` runs on the VPS and forwards test-mode webhooks to Control. Jeff logs in there himself. No Stripe key or webhook secret goes in the repo.
+- Control's name is **not** on `SPIKE_EGRESS_ALLOWLIST` and is not `SPIKE_RELAY_ALLOW_URL`. Peers verify its cert; there is no TLS skip.
+- **Cert topology.** The relay's built-in ACME fails against Let's Encrypt because the pinned crate can't parse `dns-persist-01`. So Caddy holds the LE certs for all three names. nginx routes 443 by SNI passthrough and never decrypts. The relay reads Caddy's cert and restarts weekly to pick up renewals. Details are in [PLATFORM_RUNBOOK.md](PLATFORM_RUNBOOK.md) under *VPS deploy (A4.2 pilot)*.
+- **Relay admission.** The relay admits only listed endpoint IDs: the Gateway plus each device in `peer_endpoints.txt` on the server. The Gateway endpoint ID comes from a fresh server key (not the dev key): `218c4864f8a99e38329c103172957cfc0185590f05b34997156240d02b3acdc7` (public).
+- **Open: OCI ingress for TCP 80/443** must be opened in the console. That's Jeff's action. Until then, LE issuance and Peer access from outside won't work.
 - Access details for the VPS stay out of the repo.
 
 ## Risks / open questions
