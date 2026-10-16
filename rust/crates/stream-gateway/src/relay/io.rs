@@ -108,6 +108,30 @@ pub(crate) async fn handle_peer_conn(
         return Ok(());
     }
 
+    // A4.5: a live peer_id belongs to its authenticated endpoint. A different endpoint
+    // claiming the same peer_id is refused instead of evicting the live session (two Peers
+    // sharing the default "peer_demo" used to kick each other off every ~1 s).
+    if let Some(auth) = &auth_endpoint_id {
+        let other = {
+            let peers = st.peers.read().await;
+            peers.get(&peer_id).and_then(|old| {
+                (!old.dead.load(Ordering::SeqCst) && old.auth_endpoint_id.as_ref().is_some_and(|o| o != auth))
+                    .then(|| old.sock.clone())
+            })
+        };
+        if let Some(old_sock) = other {
+            // Only a session that still answers keeps the peer_id; a dead one is replaced as before.
+            let alive = match old_sock.try_lock() { Ok(g) => g.probe_alive().await, Err(_) => true };
+            if alive {
+                tracing::warn!("peer_id_in_use {peer_id} endpoint={endpoint_id}");
+                let frame = ErrFrame::new("peer_id_in_use", Some("peer_id_in_use"));
+                conn.write_all(&ndjson_line(&frame)?).await?;
+                conn.close_with("peer_id_in_use").await;
+                return Ok(());
+            }
+        }
+    }
+
     control::enroll_peer(&st, &peer_id, &endpoint_id, &ack, &host_tier).await;
 
     let dead = Arc::new(AtomicBool::new(false));

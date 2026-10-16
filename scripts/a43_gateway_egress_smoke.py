@@ -558,12 +558,13 @@ def body() -> int:
         time.sleep(0.2)
 
     # 5. Phase B: real stream-peer
-    def real_peer(name, allow, admin):
-        pe = a42.peer_env({"SPIKE_PEER_ID": "peer_a43", "SPIKE_PUBLIC_EGRESS": "1", "SPIKE_P9_ACK": "1",
+    def real_peer(name, allow, admin, peer_id="peer_a43", wait="iroh_pilot connected"):
+        pe = a42.peer_env({"SPIKE_PEER_ID": peer_id, "SPIKE_PUBLIC_EGRESS": "1", "SPIKE_P9_ACK": "1",
                            "SPIKE_EGRESS_ALLOWLIST": allow, "SPIKE_PEER_ADMIN": admin, "HOME": str(tmp),
                            "SPIKE_IROH_KEY_PATH": str(tmp / f"{name}.key")})
         p = Proc("a42-peer", [PEER], pe, name)
-        p.expect("iroh_pilot connected", timeout=60)
+        if wait:
+            p.expect(wait, timeout=60)
         return p
 
     peer = real_peer("peer", ALLOW, "127.0.0.1:9200")
@@ -600,15 +601,47 @@ def body() -> int:
     kill_ns_proc("a42-peer", "SPIKE_PEER_ADMIN=127.0.0.1:9200")
     time.sleep(1)
 
-    peer2 = real_peer("peer2", ALLOW + ",other.example.com:443", "127.0.0.1:9201")
-    for _ in range(60):
-        st, r, _ = start("peer_a43", "echo.example.com")
-        if r.get("error") != "peer_offline":
+    # The first Peer must be fully offline (gateway dropped it, Control told) before a new Peer is matched.
+    for _ in range(150):
+        _, peers = ns_http("a42-gw", "GET", GW_HTTP + "/gw/peers")
+        if not any(p.get("peer_id") == "peer_a43" for p in peers.get("peers", [])):
             break
-        time.sleep(0.5)
-    if st != 403 or r.get("error") != "egress_allowlist_mismatch":
-        fail(f"peer mismatch {st} {r}")
+        time.sleep(0.2)
+    else:
+        fail(f"peer_a43 still on the gateway after kill: {peers}")
+    time.sleep(1)
+    # Fresh peer_id: peer_a43 was bound to the first Peer's endpoint (A4.5 peer_id binding).
+    peer2 = real_peer("peer2", ALLOW + ",other.example.com:443", "127.0.0.1:9201", peer_id="peer_a43b")
+    def mismatch_check(label):
+        for _ in range(60):
+            st, r, _ = start("peer_a43b", "echo.example.com")
+            if r.get("error") != "peer_offline":
+                break
+            time.sleep(0.5)
+        if st != 403 or r.get("error") != "egress_allowlist_mismatch":
+            fail(f"peer mismatch{label} {st} {r}")
+        return r
+    r = mismatch_check("")
     ok(f"real peer with a different allowlist -> refused at the peer: {r['error']}")
+
+    # A4.5: a different endpoint claiming the live peer_a43b is refused; the live session stays.
+    peer3 = real_peer("peer3", ALLOW, "127.0.0.1:9202", peer_id="peer_a43b", wait=None)
+    ref = gw.expect("peer_id_in_use peer_a43b", timeout=60)
+    end = time.time() + 3
+    while time.time() < end:  # drain the gateway: no "peer online peer_a43b" for the claimant
+        try:
+            line = gw.q.get(timeout=0.2)
+        except Exception:
+            continue
+        if line is None:
+            break
+        gw.lines.append(line)
+        if "peer online peer_a43b" in line:
+            fail(f"different endpoint went online under live peer_a43b: {line}")
+    mismatch_check(" after peer_id_in_use")
+    ok(f"different endpoint claiming live peer_a43b -> {ref.strip()}; existing session kept (still egress_allowlist_mismatch)")
+    peer3.p.terminate()
+    kill_ns_proc("a42-peer", "SPIKE_PEER_ADMIN=127.0.0.1:9202")
     peer2.p.terminate()
 
     print("\nA4.3_GATEWAY_EGRESS_GREEN", flush=True)

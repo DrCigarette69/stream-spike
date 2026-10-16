@@ -188,6 +188,14 @@ def body(tmp: Path):
     id_a = old["ticket"]["payload"]["peer_endpoint_id"]
     stop_peer(peer)
     peer_udp_zero(peer, "restarted Peer")
+    # A4.5 peer_id binding: key A's session must be gone before key B may claim peer_a44.
+    for _ in range(150):
+        _, gp = A.ns_http("a42-gw", "GET", A.GW_HTTP + "/gw/peers")
+        if not any(p.get("peer_id") == "peer_a44" for p in gp.get("peers", [])):
+            break
+        time.sleep(0.2)
+    else:
+        fail(f"peer_a44 (key A) still on the gateway after stop: {gp}")
     pb, _ = real_peer("peer-keyB", {"SPIKE_IROH_KEY_PATH": str(tmp / "peer_b.key")})
     id_b = next(l for l in pb.lines if "iroh_endpoint_id=" in l).split("=", 1)[1].strip()
     if id_b == id_a:
