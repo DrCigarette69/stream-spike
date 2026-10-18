@@ -159,6 +159,7 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
 - The default allowlist and caps stay as they are (50 MB/day/Peer, ≤2 concurrent streams) until Jeff answers risks 2 and 9. This section doesn't add `example.com:443` or any other host.
 - The kill switch is off by default: `SPIKE_PUBLIC_EGRESS` unset means no public egress. It is turned on only for the A4.9 run.
 - Pilot devices: both are x86_64, so only the amd64 `peer-pilot` image ships. No arm64 image.
+- **Pilot Peer image (DRAFT, 2026-10-18 CT):** `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d` (config digest), built from Peer `94d9a6e` (graceful stop logs `session_end end_reason=shutdown closed_by=local`), tag `peer-pilot:cand-94d9a6e`, a45 `A4.5_PEER_PACKAGE_GREEN`. It replaces `5fd94bdb…` (`4132e68`), which replaced `2452f56d…`. Manifest digest (what Docker 29 / the containerd store shows as the image ID): _TBD, Peer Engineer to post_. Once posted, pin both: `SPIKE_PEER_IMAGE_ID=config=sha256:cccbe8a8…725d,manifest=sha256:<manifest>`. Install steps: [PEER_PILOT_INSTALL.md](PEER_PILOT_INSTALL.md).
 - Stripe lane B (A4.6): `stripe listen` runs on the VPS and forwards test-mode webhooks to Control. Jeff logs in there himself. No Stripe key or webhook secret goes in the repo.
 - Control's name is **not** on `SPIKE_EGRESS_ALLOWLIST` and is not `SPIKE_RELAY_ALLOW_URL`. Peers verify its cert; there is no TLS skip.
 - **Cert topology.** The relay's built-in ACME fails against Let's Encrypt because the pinned crate can't parse `dns-persist-01`. So Caddy holds the LE certs for all three names. nginx routes 443 by SNI passthrough and never decrypts. The relay reads Caddy's cert and restarts weekly to pick up renewals. Details are in [PLATFORM_RUNBOOK.md](PLATFORM_RUNBOOK.md) under *VPS deploy (A4.2 pilot)*.
@@ -179,8 +180,9 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
   2. The binding is skipped when `auth_endpoint_id` is `None` (TCP transports). That's fine only if the pilot Gateway has no unauthenticated hello path. Confirm that, or refuse such hellos there.
 
 **Peer (DONE).**
-- Backoff, as implemented in `8f975dc`: exponential with full jitter. Base is 2 s (`SPIKE_REDIAL_BASE_MS`), floor base/2, cap 5 min (`SPIKE_REDIAL_CAP_MS`). The attempt count resets after a session has been up for 60 s (`SPIKE_REDIAL_RESET_SECS`). Each redial logs `redial attempt=N redial_in_ms=M after=<end_reason>`. There is no redial after `kill`, `force_disconnect`, `cleared_ack` or `consent_withdrawn`. Cap refusals (above) wait exactly the cap, with no jitter.
+- Backoff, as implemented in `8f975dc`: exponential with full jitter. Base is 2 s (`SPIKE_REDIAL_BASE_MS`), floor base/2, cap 5 min (`SPIKE_REDIAL_CAP_MS`). The attempt count resets after a session has been up for 60 s (`SPIKE_REDIAL_RESET_SECS`). Each redial logs `redial attempt=N redial_in_ms=M after=<end_reason>`. There is no redial after `kill`, `force_disconnect`, `cleared_ack`, `consent_withdrawn` or `shutdown`. Cap refusals (above) wait exactly the cap, with no jitter.
 - Session end, as implemented in `fa935fa`/`75ec884`: `session_end end_reason=… closed_by=local|remote … up_ms=…`, plus the QUIC `close_code`/`close_reason` when the remote closed.
+- Graceful stop, as implemented in `94d9a6e`: SIGTERM/SIGINT with a live session logs `session_end end_reason=shutdown closed_by=local up_ms=…`, closes within 1 s and exits 0. Verified with `docker stop -t 15` (`up_ms=90019`, UDP 0) on 2026-10-18 CT.
 
 **Vendored iroh (DONE, `42e874e`).** `last_call_me_maybe = Some(now)` is now set *before* the RelayOnly early return. That brings back the limit of one call per heartbeat interval, and nothing is sent. The 913-warning flood is gone: about one warning every 5 s per Peer remains, on old and new Peer images alike (vps-1 Gateway log, 2026-10-18). My earlier "harmless" review note was wrong. See `STREAM_PATCH.md`.
 
@@ -189,7 +191,7 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
 - a redial line before every reconnect
 - `redial_in_ms` ≥ base/2
 - attempt numbers that don't go down (except the strict `reset=1` case)
-- no redial after a user stop
+- no redial after a user stop or a graceful `shutdown` (which must be `closed_by=local`)
 - after `auth_reject:peer_id_in_use|endpoint_mismatch`, a redial at ≥ the cap
 
 With `SPIKE_GATEWAY_LOG` set, it also FAILs on any `replaced` between two different endpoints. It reports PENDING (not FAIL) while the Peer image predates `fa935fa`/`75ec884`.

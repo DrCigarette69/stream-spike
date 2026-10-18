@@ -779,7 +779,11 @@ import re as _re  # noqa: E402
 
 
 
-REDIAL_NO_RETRY_REASONS = {"kill", "force_disconnect", "cleared_ack", "consent_withdrawn"}
+REDIAL_NO_RETRY_REASONS = {"kill", "force_disconnect", "cleared_ack", "consent_withdrawn", "shutdown"}
+# Peer 94d9a6e: SIGTERM/SIGINT with a live session logs
+# `session_end end_reason=shutdown closed_by=local up_ms=<ms> udp_counters ...` then exits 0.
+# It is terminal (no redial in that process) and must be closed_by=local.
+REDIAL_LOCAL_ONLY_REASONS = {"shutdown"}
 # Peer 4f28b86/4132e68 (iroh_pilot_dial.rs CAP_REFUSALS): a Gateway refusal logs
 # `session_end end_reason=auth_reject:<code> closed_by=remote` and the next redial is
 # `redial attempt=N redial_in_ms=<cap> after=auth_reject:<code>`; Backoff::jump_to_cap returns
@@ -834,7 +838,8 @@ def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None, cap_ms=None
     don't go down unless the
     redial line has reset=1 AND attempt=1 AND the prior session_end up_ms >= reset secs*1000;
     (reset=1 otherwise FAILs); no redial after
-    kill/force_disconnect/cleared_ack/consent_withdrawn.
+    kill/force_disconnect/cleared_ack/consent_withdrawn/shutdown. end_reason=shutdown (graceful
+    SIGTERM/SIGINT, Peer 94d9a6e) must be closed_by=local; a log ending in it is fine.
     After end_reason=auth_reject:peer_id_in_use|endpoint_mismatch (closed_by=remote) the next
     redial must be after=<that reason> with redial_in_ms >= SPIKE_REDIAL_CAP_MS (default 300000;
     the Peer's jump_to_cap has no jitter). On a cap redial reset=1 still needs the long up_ms, but
@@ -873,6 +878,8 @@ def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None, cap_ms=None
                 last_up = int(up.group(1)) if up else None
                 ended, redialed = (er.group(1) if er else "?"), False
                 capped = ended if ended in REDIAL_CAP_REASONS else None
+                if ended in REDIAL_LOCAL_ONLY_REASONS and cb and cb.group(1) != "local":
+                    fails.append(f"[{tag}] end_reason={ended} must be closed_by=local: {ln.strip()}")
                 if capped:
                     counts["cap_refusal"] += 1
                     if cb and cb.group(1) != "remote":
@@ -944,19 +951,50 @@ def _norm_image_id(v):
     return v[len("sha256:"):] if v.startswith("sha256:") else v
 
 
+def parse_image_id_pins(want):
+    """SPIKE_PEER_IMAGE_ID -> [(name, normalized id)], or raises ValueError.
+    Accepts one bare ID (back compat) or a comma-separated list of bare and/or named IDs, e.g.
+    `config=sha256:cccb...,manifest=sha256:7591...`. Names are labels only ([a-z0-9_-]+);
+    unnamed entries are labelled `id`. Docker 29 / containerd store shows the manifest digest as
+    the image ID, so a pin usually lists both the config and the manifest digest."""
+    pins = []
+    for part in (want or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, val = "id", part
+        m = _re.match(r"^([A-Za-z][A-Za-z0-9_-]*)=(.*)$", part)
+        if m:
+            name, val = m.group(1).lower(), m.group(2).strip()
+        v = _norm_image_id(val)
+        if not _re.fullmatch(r"[0-9a-f]{12,64}", v):
+            raise ValueError(f"SPIKE_PEER_IMAGE_ID entry {part!r} is not a sha256 image ID")
+        pins.append((name, v))
+    if (want or "").strip() and not pins:
+        raise ValueError(f"SPIKE_PEER_IMAGE_ID={want!r} lists no image ID")
+    return pins
+
+
 def a45_image_id_check(out, want=None):
-    """a4 roll-up check on a45 output. Returns (ok, msg). `want` = SPIKE_PEER_IMAGE_ID.
-    A45_IMAGE_CONFIG_ID also counts (Docker 29+ containerd store shows the manifest digest)."""
+    """a4 roll-up check on a45 output. Returns (ok, msg). `want` = SPIKE_PEER_IMAGE_ID: one bare
+    ID or a comma-separated list of named/bare IDs (see parse_image_id_pins). Passes if any
+    A45_IMAGE_ID or A45_IMAGE_CONFIG_ID line matches any listed ID (case and `sha256:` ignored)."""
     ids = _re.findall(r"^A45_IMAGE_ID=(\S+)\s*$", out or "", _re.M)
     cfg = _re.findall(r"^A45_IMAGE_CONFIG_ID=(\S+)\s*$", out or "", _re.M)
     want = (want or "").strip()
     if want:
+        try:
+            pins = parse_image_id_pins(want)
+        except ValueError as e:
+            return False, f"FAIL a4: {e}"
         if not ids:
             return False, f"FAIL a4: SPIKE_PEER_IMAGE_ID={want} set but a45 printed no A45_IMAGE_ID line"
         got = {_norm_image_id(x) for x in ids + cfg}
-        if _norm_image_id(want) not in got:
-            return False, f"FAIL a4: a45 A45_IMAGE_ID={ids[-1]} != SPIKE_PEER_IMAGE_ID={want}"
-        return True, f"OK a45 image id {ids[-1]} == SPIKE_PEER_IMAGE_ID"
+        hit = [n for n, v in pins if v in got]
+        if not hit:
+            shown = ids[-1] + (f" (config {cfg[-1]})" if cfg else "")
+            return False, f"FAIL a4: a45 A45_IMAGE_ID={shown} matches none of SPIKE_PEER_IMAGE_ID={want}"
+        return True, f"OK a45 image id {ids[-1]} matches SPIKE_PEER_IMAGE_ID ({'/'.join(hit)})"
     return True, f"INFO a45 image id {ids[-1] if ids else '?'}"
 
 A44_FINAL_MARKER = "A4.4_PEER_EGRESS_GREEN"
@@ -1425,6 +1463,12 @@ def _a4_reconnect_selftest():
         ("legacy ok: new process restarts attempt count", B + C + se("x") + rd(4, 1500, "x") + B + C + se("x") + rd(1, 1500, "x") + C, {}, "ok", "OK a4 reconnect"),
         ("legacy fail: unparsable redial", B + C + se("x") + P + "redial attempt=one\n", {}, "fail", "unparsable redial"),
         ("legacy ok: user stop, no redial", B + C + se("consent_withdrawn", "local") + B + C, {}, "ok", "OK a4 reconnect"),
+        # 94d9a6e graceful stop
+        ("shutdown ok: log ends in shutdown session_end", B + C + se("shutdown", "local", 90019), {}, "ok", "OK a4 reconnect"),
+        ("shutdown ok: blip, reconnect, then graceful stop", B + C + se("read_error", up=170854) + rd(1, 1819, "read_error", True) + C + se("shutdown", "local", 90019), {}, "ok", "reset=1"),
+        ("shutdown ok: next process after shutdown", B + C + se("shutdown", "local") + B + C, {}, "ok", "OK a4 reconnect"),
+        ("shutdown fail: redial after shutdown", B + C + se("shutdown", "local") + rd(1, 1500, "shutdown"), {}, "fail", "redial after end_reason=shutdown (must not redial)"),
+        ("shutdown fail: shutdown closed_by=remote", B + C + se("shutdown", "remote"), {}, "fail", "end_reason=shutdown must be closed_by=local"),
         # 4f28b86 / 4132e68 cap refusals
         ("cap ok: peer_id_in_use -> redial at cap", B + C + se(PIU, up=40) + rd(9, 300000, PIU) + C, {}, "ok", "cap_redial=1"),
         ("cap fail: peer_id_in_use short backoff", B + C + se(PIU, up=40) + rd(1, 2000, PIU) + C, {}, "fail", f"redial_in_ms=2000 after {PIU} < cap 300000"),
@@ -1471,10 +1515,43 @@ def _a4_reconnect_selftest():
     print(f"A4_RECONNECT_SELFTEST_OK {n_ok}/{len(cases) + 1}", flush=True)
 
 
+def _a4_image_id_selftest():
+    """Synthetic cases for a45_image_id_check / SPIKE_PEER_IMAGE_ID lists (no docker)."""
+    CFG = "sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d"
+    MAN = "sha256:7591e580" + "0" * 56  # placeholder manifest digest (real one not posted yet)
+    OLD = "sha256:5fd94bdb" + "1" * 56
+    out_cfg = f"A45_IMAGE_ID={CFG}\nA4.5_PEER_PACKAGE_GREEN\n"                       # classic store
+    out_man = f"A45_IMAGE_ID={MAN}\nA45_IMAGE_CONFIG_ID={CFG}\nA4.5_PEER_PACKAGE_GREEN\n"  # containerd store
+    out_man_only = f"A45_IMAGE_ID={MAN}\nA4.5_PEER_PACKAGE_GREEN\n"                  # ctr lookup failed
+    cases = [
+        # (name, a45 out, SPIKE_PEER_IMAGE_ID, want ok, needle)
+        ("bare id ok (back compat)", out_cfg, CFG, True, "matches SPIKE_PEER_IMAGE_ID (id)"),
+        ("bare id without sha256:, upper case ok", out_cfg, CFG[7:].upper(), True, "(id)"),
+        ("bare id mismatch fails", out_cfg, OLD, False, "matches none of"),
+        ("bare config id vs containerd A45_IMAGE_CONFIG_ID ok", out_man, CFG, True, "(id)"),
+        ("named list: config matches", out_cfg, f"config={CFG},manifest={MAN}", True, "(config)"),
+        ("named list: manifest matches A45_IMAGE_ID", out_man_only, f"config={CFG},manifest={MAN}", True, "(manifest)"),
+        ("named list: both match", out_man, f"config={CFG}, manifest={MAN}", True, "(config/manifest)"),
+        ("bare list ok", out_man_only, f"{CFG},{MAN}", True, "(id)"),
+        ("named list: none match fails", out_cfg, f"config={OLD},manifest={MAN}", False, "matches none of"),
+        ("list set but no A45_IMAGE_ID line fails", "A4.5_PEER_PACKAGE_GREEN\n", f"config={CFG}", False, "no A45_IMAGE_ID line"),
+        ("malformed entry fails", out_cfg, f"config={CFG},manifest=", False, "is not a sha256 image ID"),
+        ("only commas fails", out_cfg, ",,", False, "lists no image ID"),
+        ("unset -> INFO", out_cfg, "", True, "INFO a45 image id"),
+    ]
+    for name, out, want, wok, needle in cases:
+        ok, msg = a45_image_id_check(out, want)
+        if ok != wok or needle not in msg:
+            raise SystemExit(f"FAIL a4 image-id selftest [{name}]: got {ok} {msg!r}, want {wok} with {needle!r}")
+    print(f"A4_IMAGE_ID_SELFTEST_OK {len(cases)}/{len(cases)}", flush=True)
+
+
 def _a4_selftest():
-    """Offline self-test of the a4 grep helpers (no smokes): insecure grep + comment stripping + reconnect contract."""
+    """Offline self-test of the a4 grep helpers (no smokes): insecure grep + comment stripping +
+    reconnect contract + a45 image-ID pin lists."""
     _a4_insecure_selftest()
     _a4_reconnect_selftest()
+    _a4_image_id_selftest()
     print("A4_SELFTEST_OK", flush=True)
     return 0
 

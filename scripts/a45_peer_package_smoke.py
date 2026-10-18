@@ -23,7 +23,9 @@ Image selection (a45 never moves the shared `peer-pilot:amd64` tag):
   * otherwise build to SPIKE_A45_TAG (default temporary `peer-pilot:a45-<pid>`), and remove that
     tag at the end unless SPIKE_A45_KEEP=1. SPIKE_A45_TAG=peer-pilot:amd64 is refused.
 Prints A45_IMAGE_ID=<id>. If SPIKE_PEER_IMAGE_ID is set, FAILs unless the image is that ID
-(or, on Docker 29 containerd store, its config digest is).
+(or, on Docker 29 containerd store, its config digest is). SPIKE_PEER_IMAGE_ID may be one bare
+ID or a comma-separated list of named/bare IDs, e.g. `config=sha256:...,manifest=sha256:...`;
+any listed ID matching passes (case and `sha256:` prefix ignored).
 SKIP (exit 0) when docker or `sudo -n` is unavailable, unless SPIKE_A4=1 (then FAIL).
 Docker is only ever talked to over the local unix socket (`-H unix:///var/run/docker.sock`);
 the smoke refuses to run when DOCKER_HOST points anywhere else (e.g. a tcp:// engine).
@@ -39,6 +41,31 @@ KEEP = bool(PREBUILT) or os.environ.get("SPIKE_A45_KEEP", "").strip() == "1"
 # Optional pin: approved image ID (sha256:...). When set, a45 FAILs unless the built/loaded image
 # is that ID (directly, or as the config digest under Docker 29's containerd store).
 WANT_ID = os.environ.get("SPIKE_PEER_IMAGE_ID", "").strip()
+
+
+def _norm_id(v):
+    v = (v or "").strip().lower()
+    return v[len("sha256:"):] if v.startswith("sha256:") else v
+
+
+def want_ids():
+    """SPIKE_PEER_IMAGE_ID -> {normalized id: name}; same rules as run_local_asserts.parse_image_id_pins."""
+    out = {}
+    for part in WANT_ID.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, val = "id", part
+        m = re.match(r"^([A-Za-z][A-Za-z0-9_-]*)=(.*)$", part)
+        if m:
+            name, val = m.group(1).lower(), m.group(2).strip()
+        v = _norm_id(val)
+        if not re.fullmatch(r"[0-9a-f]{12,64}", v):
+            fail(f"SPIKE_PEER_IMAGE_ID entry {part!r} is not a sha256 image ID")
+        out[v] = name
+    if WANT_ID and not out:
+        fail(f"SPIKE_PEER_IMAGE_ID={WANT_ID!r} lists no image ID")
+    return out
 DOCKER_SOCK = "unix:///var/run/docker.sock"
 DOCKER = ["sudo", "-n", "docker", "-H", DOCKER_SOCK]
 NAME = f"a45-peer-{os.getpid()}"
@@ -129,8 +156,9 @@ def check_image_id(shown):
     print(f"A45_IMAGE_ID={shown}", flush=True)
     if not WANT_ID:
         return
-    if shown == WANT_ID:
-        print(f"a45: image ID matches SPIKE_PEER_IMAGE_ID", flush=True)
+    wants = want_ids()
+    if _norm_id(shown) in wants:
+        print(f"a45: image ID matches SPIKE_PEER_IMAGE_ID ({wants[_norm_id(shown)]})", flush=True)
         return
     # Docker 29+ containerd store shows the manifest digest; the approved ID is the config digest.
     r = subprocess.run(["sudo", "-n", "ctr", "-n", "moby", "content", "get", shown],
@@ -138,8 +166,8 @@ def check_image_id(shown):
     m = re.search(r'"config":\{[^}]*"digest":"(sha256:[0-9a-f]{64})"', r.stdout or "")
     if m:
         print(f"A45_IMAGE_CONFIG_ID={m.group(1)}", flush=True)
-        if m.group(1) == WANT_ID:
-            print("a45: image config ID matches SPIKE_PEER_IMAGE_ID", flush=True)
+        if _norm_id(m.group(1)) in wants:
+            print(f"a45: image config ID matches SPIKE_PEER_IMAGE_ID ({wants[_norm_id(m.group(1))]})", flush=True)
             return
     fail(f"image ID {shown} != SPIKE_PEER_IMAGE_ID {WANT_ID}")
 
