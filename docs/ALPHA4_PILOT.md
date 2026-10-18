@@ -166,17 +166,33 @@ Answers risk 1 (no domain yet, so sslip.io per the A4.1 amendment; risk 11 still
 - **Open: OCI ingress for TCP 80/443** must be opened in the console. That's Jeff's action. Until then, LE issuance and Peer access from outside won't work.
 - Access details for the VPS stay out of the repo.
 
-## A4.R reconnect contract (DRAFT, 2026-10-16 CT)
+## A4.R reconnect contract (DRAFT, updated 2026-10-18 CT)
 
-**Gateway (OPEN).** `egress_off` is a state, not an error. With the kill switch off, the session stays up and idle, and each stream is refused with `egress_off`. The Gateway never sends an ERR frame and never closes QUIC because the kill switch is off. Status: **OPEN**, pending Platform's close-reason finding. We saw about 52 redials in 2 minutes against vps-1 between 4:16 and 4:29 PM CT on 2026-10-16.
+**Gateway (CLOSED for the pilot).** `egress_off` is a state, not an error. With the kill switch off, the session stays up and idle, and each stream is refused with `egress_off`. The Gateway never sends an ERR frame and never closes QUIC because the kill switch is off.
+- Root cause of the redial loop (about 52 redials in 2 minutes against vps-1, 4:16–4:29 PM CT on 2026-10-16): a session clash, not `egress_off`. Every Peer said hello as the shared default `peer_demo`, so the box and vps-2 Peers kept replacing each other's session.
+- Fix, part 1 (Peer `b0374fc`): under `iroh_pilot`, each Peer derives its `peer_id` from its endpoint: `peer_` plus the first 16 hex characters of the endpoint ID, unless `SPIKE_PEER_ID` is set. An explicit `peer_demo` stops startup with exit code 2. The bind line logs `peer_id=<id> source=env|endpoint`.
+- Fix, part 2 (Gateway `ce80867`): a live `peer_id` is bound to its authenticated endpoint. If the same endpoint reconnects, it replaces its old session. If a different endpoint claims a live `peer_id`, it gets `ERR peer_id_in_use` and a QUIC close with reason `peer_id_in_use`, and the existing session is kept. Control is never told about the refusal.
+- Peer handling (`4f28b86`, `4132e68`): `peer_id_in_use` and `endpoint_mismatch` (whether they arrive as the ERR frame or the close reason) log `session_end end_reason=auth_reject:<code> closed_by=remote`. The backoff then jumps straight to the 300 s cap (`SPIKE_REDIAL_CAP_MS`) with no fast redials, and keeps redialing at the cap, so a stray second copy clears once it's stopped. P8 shows the `peer_id_in_use` reason key from Designer's `a1da9a2`. `endpoint_mismatch` used to stop for good and now also redials at the cap.
+- Verified on vps-1 at `4132e68` (2:58–3:01 PM CT, 2026-10-18): `peer_demo` (vps-2) and `peer_92a9d943afd7d7d4` (box candidate) were both online, with 0 `replaced`, 0 `peer_id_in_use` and `hole_punch_attempts=0`.
+- Follow-ups (Platform; neither blocks the pilot):
+  1. Check-then-insert race. The `peer_id` binding check runs under a read lock, but the session is only inserted later under a separate write lock. So two different endpoints arriving at once could both get past the check. Do the check and the insert under one write lock.
+  2. The binding is skipped when `auth_endpoint_id` is `None` (TCP transports). That's fine only if the pilot Gateway has no unauthenticated hello path. Confirm that, or refuse such hellos there.
 
 **Peer (DONE).**
-- Backoff, as implemented in `8f975dc`: exponential with full jitter. Base is 2 s (`SPIKE_REDIAL_BASE_MS`), floor base/2, cap 5 min (`SPIKE_REDIAL_CAP_MS`). The attempt count resets after a session has been up for 60 s (`SPIKE_REDIAL_RESET_SECS`). Each redial logs `redial attempt=N redial_in_ms=M after=<end_reason>`. There is no redial after `kill`, `force_disconnect`, `cleared_ack` or `consent_withdrawn`.
-- Session end, as implemented in `fa935fa`: `session_end end_reason=… closed_by=local|remote`, plus the QUIC `close_code`/`close_reason` when the remote closed.
+- Backoff, as implemented in `8f975dc`: exponential with full jitter. Base is 2 s (`SPIKE_REDIAL_BASE_MS`), floor base/2, cap 5 min (`SPIKE_REDIAL_CAP_MS`). The attempt count resets after a session has been up for 60 s (`SPIKE_REDIAL_RESET_SECS`). Each redial logs `redial attempt=N redial_in_ms=M after=<end_reason>`. There is no redial after `kill`, `force_disconnect`, `cleared_ack` or `consent_withdrawn`. Cap refusals (above) wait exactly the cap, with no jitter.
+- Session end, as implemented in `fa935fa`/`75ec884`: `session_end end_reason=… closed_by=local|remote … up_ms=…`, plus the QUIC `close_code`/`close_reason` when the remote closed.
 
-**Vendored iroh (Platform fixing).** `last_call_me_maybe` must be set *before* the RelayOnly early return. My earlier review of the vendored patch missed this.
+**Vendored iroh (DONE, `42e874e`).** `last_call_me_maybe = Some(now)` is now set *before* the RelayOnly early return. That brings back the limit of one call per heartbeat interval, and nothing is sent. The 913-warning flood is gone: about one warning every 5 s per Peer remains, on old and new Peer images alike (vps-1 Gateway log, 2026-10-18). My earlier "harmless" review note was wrong. See `STREAM_PATCH.md`.
 
-**Checks.** The a4 roll-up runs `peer_reconnect_check` over the a42–a44 Peer logs (see [LOCAL_ASSERTS.md](LOCAL_ASSERTS.md) A4.8). It enforces end_reason and closed_by on every `session_end`, a redial line before every reconnect, `redial_in_ms` ≥ base/2, attempt numbers that don't go down, and no redial after a terminal reason. It reports PENDING (not FAIL) while the Peer image predates `fa935fa`.
+**Checks.** The a4 roll-up runs `peer_reconnect_check` over the a42–a44 Peer logs (see [LOCAL_ASSERTS.md](LOCAL_ASSERTS.md) A4.8). It enforces:
+- end_reason and closed_by on every `session_end`
+- a redial line before every reconnect
+- `redial_in_ms` ≥ base/2
+- attempt numbers that don't go down (except the strict `reset=1` case)
+- no redial after a user stop
+- after `auth_reject:peer_id_in_use|endpoint_mismatch`, a redial at ≥ the cap
+
+With `SPIKE_GATEWAY_LOG` set, it also FAILs on any `replaced` between two different endpoints. It reports PENDING (not FAIL) while the Peer image predates `fa935fa`/`75ec884`.
 
 ## Risks / open questions
 
