@@ -2,12 +2,13 @@
 
 For the two pilot Linux devices. **amd64 only**: both pilot devices are x86_64.
 
-**Approved pilot image ID: `sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e`.**
+**Approved pilot image ID: `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d`.**
 The image is pinned by ID, never by tag: `peer-pilot:amd64` is only a convenience name and a
 rebuild can silently move it. Every load/verify/run below uses the ID. A new ID replaces this one
 only after `a45` passes on it (`SPIKE_PEER_IMAGE_ID=<new id>`) and the room agrees.
-Built from commit `4132e68` (replaced `sha256:2452f56d…`, which predates the derived peer_id and
-redial backoff).
+Built from commit `94d9a6e` (build tag `peer-pilot:cand-94d9a6e`; replaced `sha256:5fd94bdb…` from
+`4132e68`, which logged no `session_end` on a graceful stop, and before that `sha256:2452f56d…`,
+which predates the derived peer_id and redial backoff).
 
 The image is built from `rust/crates/stream-peer/Dockerfile.pilot`. It contains no key and no
 settings: each device's identity key and daily byte counter live in a Docker volume mounted at
@@ -25,17 +26,17 @@ on 2375/2376), and don't add your user to the `docker` group; every command belo
 On a build box with the repo:
 
 ```
-git checkout 4132e68
-sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:cand-4132e68 rust/
-sudo docker image inspect -f '{{.Id}}' sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e   # must succeed
-sudo docker save sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e | gzip > peer-pilot-amd64.tar.gz
+git checkout 94d9a6e
+sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:cand-94d9a6e rust/
+sudo docker image inspect -f '{{.Id}}' sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d   # must succeed
+sudo docker save sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d | gzip > peer-pilot-amd64.tar.gz
 ```
 
-(Or run `SPIKE_PEER_IMAGE_ID=sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e python3 scripts/a45_peer_package_smoke.py`,
+(Or run `SPIKE_PEER_IMAGE_ID=sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d python3 scripts/a45_peer_package_smoke.py`,
 which FAILs if the build isn't that ID and prints `A45_IMAGE_ID=<id>`.)
 
 Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`
-and verify by ID: `sudo docker image inspect -f '{{.Id}}' sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e`
+and verify by ID: `sudo docker image inspect -f '{{.Id}}' sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d`
 must print that same ID. Don't verify via the tag.
 
 Note: Docker 29+ (containerd image store, the Ubuntu 26.04 default) shows the *manifest* digest
@@ -88,7 +89,7 @@ sudo docker volume create peer-data
 sudo docker run -d --name peer --restart unless-stopped \
   --env-file /etc/peer-pilot.env \
   -v peer-data:/data \
-  sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e
+  sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d
 ```
 
 (Docker 29+: use the manifest ID you confirmed in step 1.) Check what is running:
@@ -143,6 +144,9 @@ sudo docker exec peer peer-admin GET /peer/egress      # sites, byte count, swit
 - Pause sharing (stays paused until you resume):
   `sudo docker exec peer peer-admin POST /peer/kill`
 - Resume: `sudo docker exec peer peer-admin POST /peer/resume`
-- Stop everything: `sudo docker stop peer` (saves today's byte count first).
+- Stop everything: `sudo docker stop -t 15 peer` (saves today's byte count first). With a live
+  session, a graceful stop logs `peer iroh_pilot session_end end_reason=shutdown closed_by=local up_ms=...`
+  (the Peer closes with reason `shutdown`, waits at most 1 s, then exits 0); the Gateway sees a normal
+  `peer offline`.
 - Withdraw consent: POST `{"accepted":false}` to `/peer/consent`; sharing stops until you accept again.
 - Remove: `sudo docker rm -f peer` (add `sudo docker volume rm peer-data` to also delete the device key).

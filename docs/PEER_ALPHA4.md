@@ -150,6 +150,9 @@ egress (CLOSE reason `relay_path_required`), kill the transport via the slot (<=
 `a4_refuse_relay_path_required:udp_datagrams:<n> (...)` or `:direct_path:<addr>` (same reason as P8), P8
 `relay_path_required` once, `left relay path: closed, not retrying`, no redial.
 Logs: `peer iroh_pilot udp_counters ...` after bind, `path ...` at connect, `session_end ...`.
+Graceful stop (`docker stop -t 15`, SIGTERM/SIGINT; `94d9a6e`): with a live session the Peer logs
+`peer iroh_pilot session_end end_reason=shutdown closed_by=local up_ms=... udp_counters total=0 ...`,
+closes with reason `shutdown` (<= 1 s), flushes the budget and exits 0; no redial.
 **Counter source:** iroh 0.95.1 only exposes the magicsock counters via `Endpoint::metrics()`
 (iroh feature `metrics`); stream-peer's `iroh_pilot` turns it on (as Gateway's does):
 `iroh_pilot = ["iroh_local", "iroh/test-utils", "iroh/metrics"]` (no lock change).
@@ -220,7 +223,7 @@ non-root, key 0600 in `/data`, runs healthy with `--network none`, same endpoint
 restart. Metrics check: the image logs `udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0
 recv_v6=0` after bind and never `udp_counters_unavailable`. Docker only via `-H unix:///var/run/docker.sock`; refuses if DOCKER_HOST is not unix://.
 Pilot ships amd64 only (both pilot devices are x86_64). Approved image, pinned by ID (never by
-the `peer-pilot:amd64` tag): `sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e` (built from `4132e68`; replaced `sha256:2452f56d…`). Install/run
+the `peer-pilot:amd64` tag): `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d` (built from `94d9a6e`, tag `peer-pilot:cand-94d9a6e`; replaced `sha256:5fd94bdb…` from `4132e68`, before that `sha256:2452f56d…`). Install/run
 reference that ID; `a45` checks it with `SPIKE_PEER_IMAGE_ID` and prints `A45_IMAGE_ID=<id>`. A new
 ID replaces it only after `a45` passes on it and the room agrees.
 Install steps for the pilot devices: `docs/PEER_PILOT_INSTALL.md`. Do not set `SPIKE_PEER_ID`
