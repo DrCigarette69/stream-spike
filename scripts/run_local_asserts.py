@@ -780,10 +780,53 @@ import re as _re  # noqa: E402
 
 
 REDIAL_NO_RETRY_REASONS = {"kill", "force_disconnect", "cleared_ack", "consent_withdrawn"}
+# Peer 4f28b86/4132e68 (iroh_pilot_dial.rs CAP_REFUSALS): a Gateway refusal logs
+# `session_end end_reason=auth_reject:<code> closed_by=remote` and the next redial is
+# `redial attempt=N redial_in_ms=<cap> after=auth_reject:<code>`; Backoff::jump_to_cap returns
+# exactly cap_ms (no jitter), so the lower bound is cap_ms itself.
+REDIAL_CAP_REASONS = ("auth_reject:peer_id_in_use", "auth_reject:endpoint_mismatch")
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;]*m")
 
 
-def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None):
-    """A4.R reconnect contract over captured Peer logs (8f975dc / fa935fa).
+def gateway_replaced_check(text):
+    """Gateway half of A4.R over a Gateway log (stream-gateway/src/relay/io.rs, ce80867).
+    The Gateway logs no line for a `replaced` close, so a replacement is inferred: a second
+    `peer online <peer_id> endpoint=<E2>` with no `peer offline <peer_id>` since the first
+    `peer online <peer_id> endpoint=<E1>` (a replaced session never logs `peer offline`).
+    E1 != E2 FAILs (one Peer knocked another offline); E1 == E2 is the allowed same-endpoint
+    replace. `gateway HTTP on` (startup) clears the table. Returns (fails, counts)."""
+    live, fails = {}, []
+    counts = {"online": 0, "replaced_same": 0, "replaced_cross": 0, "peer_id_in_use": 0}
+    for ln in (text or "").splitlines():
+        ln = _ANSI_RE.sub("", ln)
+        if "gateway HTTP on " in ln:
+            live = {}
+            continue
+        m = _re.search(r"\bpeer online (\S+) endpoint=(\S*)", ln)
+        if m:
+            pid, ep = m.group(1), m.group(2)
+            counts["online"] += 1
+            if pid in live:
+                old = live[pid]
+                if old and ep and old != ep:
+                    counts["replaced_cross"] += 1
+                    fails.append(f"gateway: `replaced` across endpoints for {pid}: {old[:16]}… -> {ep[:16]}… "
+                                 f"(a different endpoint evicted a live session): {ln.strip()}")
+                else:
+                    counts["replaced_same"] += 1
+            live[pid] = ep
+            continue
+        m = _re.search(r"\bpeer offline (\S+)", ln)
+        if m:
+            live.pop(m.group(1), None)
+            continue
+        if _re.search(r"\bpeer_id_in_use \S+ endpoint=", ln):
+            counts["peer_id_in_use"] += 1
+    return fails, counts
+
+
+def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None, cap_ms=None, gateway_log=None):
+    """A4.R reconnect contract over captured Peer logs (8f975dc / fa935fa / 75ec884 / 4132e68).
     Returns (status, msgs, counts); status is "ok", "pending" or "fail".
     A Peer process starts at its `peer iroh_pilot bound` line. Within one process:
     every `session_end` carries end_reason= and closed_by=; a `connected gateway=` after a
@@ -791,20 +834,31 @@ def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None):
     don't go down unless the
     redial line has reset=1 AND attempt=1 AND the prior session_end up_ms >= reset secs*1000;
     (reset=1 otherwise FAILs); no redial after
-    kill/force_disconnect/cleared_ack/consent_withdrawn."""
+    kill/force_disconnect/cleared_ack/consent_withdrawn.
+    After end_reason=auth_reject:peer_id_in_use|endpoint_mismatch (closed_by=remote) the next
+    redial must be after=<that reason> with redial_in_ms >= SPIKE_REDIAL_CAP_MS (default 300000;
+    the Peer's jump_to_cap has no jitter). On a cap redial reset=1 still needs the long up_ms, but
+    attempt= is the cap step, not 1.
+    gateway_log: Gateway log text; default reads the file at SPIKE_GATEWAY_LOG. If given, a
+    `replaced` between two different endpoints FAILs (see gateway_replaced_check)."""
     if base_ms is None:
         base_ms = int(os.environ.get("SPIKE_REDIAL_BASE_MS") or 2000)
     if reset_secs is None:
         reset_secs = float(os.environ.get("SPIKE_REDIAL_RESET_SECS") or 60)
+    if cap_ms is None:
+        cap_ms = int(os.environ.get("SPIKE_REDIAL_CAP_MS") or 300000)
+    cap_ms = max(cap_ms, base_ms)  # Backoff::new: cap_ms.max(base_ms)
     floor = base_ms // 2
-    fails, counts = [], {"session_end": 0, "with_reason": 0, "redial": 0, "reconnect": 0, "with_up_ms": 0, "reset": 0}
+    fails, counts = [], {"session_end": 0, "with_reason": 0, "redial": 0, "reconnect": 0, "with_up_ms": 0, "reset": 0,
+                         "cap_refusal": 0, "cap_redial": 0}
     for tag, out in outs_by_tag.items():
         ended = None          # last session_end fields in this process, until a reconnect
         redialed = False
+        capped = None         # cap-refusal end_reason awaiting its redial line
         last_attempt, last_up = None, None
         for ln in (out or "").splitlines():
             if "peer iroh_pilot bound " in ln:
-                ended, redialed, last_attempt, last_up = None, False, None, None
+                ended, redialed, capped, last_attempt, last_up = None, False, None, None, None
             elif "session_end" in ln and "peer iroh_pilot" in ln:
                 counts["session_end"] += 1
                 er = _re.search(r"\bend_reason=(\S+)", ln)
@@ -818,6 +872,11 @@ def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None):
                     counts["with_up_ms"] += 1
                 last_up = int(up.group(1)) if up else None
                 ended, redialed = (er.group(1) if er else "?"), False
+                capped = ended if ended in REDIAL_CAP_REASONS else None
+                if capped:
+                    counts["cap_refusal"] += 1
+                    if cb and cb.group(1) != "remote":
+                        fails.append(f"[{tag}] end_reason={capped} must be closed_by=remote: {ln.strip()}")
             elif "peer iroh_pilot redial attempt=" in ln:
                 counts["redial"] += 1
                 m = _re.search(r"attempt=(\d+) redial_in_ms=(\d+)", ln)
@@ -829,32 +888,56 @@ def peer_reconnect_check(outs_by_tag, base_ms=None, reset_secs=None):
                     fails.append(f"[{tag}] redial after end_reason={ended} (must not redial): {ln.strip()}")
                 if ms < floor:
                     fails.append(f"[{tag}] redial_in_ms={ms} < floor {floor} (base {base_ms}): {ln.strip()}")
+                aft = _re.search(r"\bafter=(\S+)", ln)
+                if capped:
+                    counts["cap_redial"] += 1
+                    if not aft or aft.group(1) != capped:
+                        fails.append(f"[{tag}] redial after end_reason={capped} has after="
+                                     f"{aft.group(1) if aft else '<missing>'} (want after={capped}): {ln.strip()}")
+                    if ms < cap_ms:
+                        fails.append(f"[{tag}] redial_in_ms={ms} after {capped} < cap {cap_ms} "
+                                     f"(SPIKE_REDIAL_CAP_MS; must back off straight to the cap, no fast redial): {ln.strip()}")
                 reset = _re.search(r"\breset=1\b", ln) is not None
                 long_up = last_up is not None and last_up >= reset_secs * 1000
                 if reset:
                     counts["reset"] += 1
-                    if a != 1:
+                    if a != 1 and not capped:
                         fails.append(f"[{tag}] reset=1 with attempt={a} (must be 1): {ln.strip()}")
                     if not long_up:
                         fails.append(f"[{tag}] reset=1 but prior session_end up_ms={last_up} < {reset_secs * 1000:g}: {ln.strip()}")
                 elif last_attempt is not None and a < last_attempt:
                     fails.append(f"[{tag}] redial attempt went {last_attempt} -> {a} without reset=1")
-                last_attempt, redialed = a, True
+                last_attempt, redialed, capped = a, True, None
             elif "peer iroh_pilot connected gateway=" in ln:
                 if ended is not None:
                     counts["reconnect"] += 1
                     if not redialed:
                         fails.append(f"[{tag}] reconnect after session_end end_reason={ended} with no redial attempt= line")
-                ended, redialed = None, False
+                ended, redialed, capped = None, False, None
+    info, gfails = [], []
+    if gateway_log is None:
+        gp = (os.environ.get("SPIKE_GATEWAY_LOG") or "").strip()
+        if gp and Path(gp).is_file():
+            gateway_log = Path(gp).read_text(errors="replace")
+        else:
+            info.append("INFO a4 reconnect: no Gateway log (SPIKE_GATEWAY_LOG unset or missing); "
+                        "replaced-across-endpoints check skipped")
+    if gateway_log is not None:
+        gfails, g = gateway_replaced_check(gateway_log)
+        info.append(f"INFO a4 reconnect gateway log: online={g['online']} replaced_same_endpoint={g['replaced_same']} "
+                    f"replaced_cross_endpoint={g['replaced_cross']} peer_id_in_use={g['peer_id_in_use']}")
     summary = (f"session_end={counts['session_end']} (with end_reason={counts['with_reason']}) "
-               f"(with up_ms={counts['with_up_ms']}) redial={counts['redial']} reset={counts['reset']} reconnect={counts['reconnect']} floor_ms={floor}")
+               f"(with up_ms={counts['with_up_ms']}) redial={counts['redial']} reset={counts['reset']} reconnect={counts['reconnect']} "
+               f"cap_refusal={counts['cap_refusal']} cap_redial={counts['cap_redial']} floor_ms={floor} cap_ms={cap_ms}")
+    if gfails:  # Gateway clash FAILs whatever the Peer image
+        return "fail", [f"FAIL a4 reconnect: {f}" for f in gfails + fails] + [f"  ({summary})"] + info, counts
     if counts["session_end"] and not counts["with_reason"]:
-        return "pending", [f"PENDING a4 reconnect: no session_end line has end_reason= (peer image predates fa935fa); {summary}"], counts
+        return "pending", [f"PENDING a4 reconnect: no session_end line has end_reason= (peer image predates fa935fa); {summary}"] + info, counts
     if counts["with_reason"] and not counts["with_up_ms"] and not fails:
-        return "pending", [f"PENDING a4 reconnect: no session_end line has up_ms= (peer image predates 75ec884); {summary}"], counts
+        return "pending", [f"PENDING a4 reconnect: no session_end line has up_ms= (peer image predates 75ec884); {summary}"] + info, counts
     if fails:
-        return "fail", [f"FAIL a4 reconnect: {f}" for f in fails] + [f"  ({summary})"], counts
-    return "ok", [f"OK a4 reconnect contract: {summary}"], counts
+        return "fail", [f"FAIL a4 reconnect: {f}" for f in fails] + [f"  ({summary})"] + info, counts
+    return "ok", [f"OK a4 reconnect contract: {summary}"] + info, counts
 
 def _norm_image_id(v):
     v = (v or "").strip().lower()
@@ -1308,9 +1391,90 @@ def a4_ux_copy_check():
           "no raw reason code / forbidden substrings", flush=True)
 
 
+def _a4_reconnect_selftest():
+    """Synthetic cases for peer_reconnect_check / gateway_replaced_check (no smokes)."""
+    saved = {k: os.environ.pop(k, None) for k in ("SPIKE_GATEWAY_LOG", "SPIKE_REDIAL_BASE_MS",
+                                                    "SPIKE_REDIAL_CAP_MS", "SPIKE_REDIAL_RESET_SECS")}
+    P = "peer iroh_pilot "
+    B = P + "bound peer_id=peer_92a9d943afd7d7d4 source=endpoint\n"
+    C = P + "connected gateway=218c4864 alpn=x via=https://relay\n"
+    U = "udp_counters total=0"
+
+    def se(r, by="remote", up=1000):
+        return P + f"session_end end_reason={r} closed_by={by} up_ms={up} {U}\n"
+
+    def rd(a, ms, after, reset=False):
+        return P + f"redial attempt={a} redial_in_ms={ms}{' reset=1' if reset else ''} after={after}\n"
+
+    PIU, EM = "auth_reject:peer_id_in_use", "auth_reject:endpoint_mismatch"
+    GW = "2026-10-18T19:55:35.612679Z  INFO stream_gateway::relay::io: "
+    E1, E2 = "7b6748fbd0596e6c" + "a" * 48, "92a9d943afd7d7d4" + "b" * 48
+    cases = [
+        # (name, logs, kwargs, want status, needle in joined msgs)
+        ("legacy ok: remote close -> redial -> reconnect", B + C + se("remote_closed") + rd(1, 1500, "remote_closed") + C, {}, "ok", "OK a4 reconnect"),
+        ("legacy pending: no end_reason (pre-fa935fa)", B + C + P + "session_end\n" + C, {}, "pending", "predates fa935fa"),
+        ("legacy pending: no up_ms (pre-75ec884)", B + C + P + "session_end end_reason=remote_closed closed_by=remote\n" + rd(1, 1500, "remote_closed") + C, {}, "pending", "predates 75ec884"),
+        ("legacy fail: missing closed_by", B + C + P + f"session_end end_reason=remote_closed up_ms=5 {U}\n", {}, "fail", "without end_reason=/closed_by="),
+        ("legacy fail: reconnect with no redial", B + C + se("remote_closed") + C, {}, "fail", "no redial attempt= line"),
+        ("legacy fail: redial below floor", B + C + se("remote_closed") + rd(1, 999, "remote_closed") + C, {}, "fail", "< floor 1000"),
+        ("legacy fail: redial after kill", B + C + se("kill", "local") + rd(1, 1500, "kill"), {}, "fail", "must not redial"),
+        ("legacy fail: attempt drop without reset", B + C + se("x") + rd(3, 1500, "x") + C + se("x") + rd(2, 1500, "x"), {}, "fail", "3 -> 2 without reset=1"),
+        ("legacy ok: reset=1 attempt=1 after long session", B + C + se("x") + rd(3, 1500, "x") + C + se("x", up=60000) + rd(1, 1500, "x", True) + C, {}, "ok", "reset=1"),
+        ("legacy fail: reset=1 after short session", B + C + se("x", up=59999) + rd(1, 1500, "x", True), {}, "fail", "reset=1 but prior session_end up_ms=59999"),
+        ("legacy fail: reset=1 with attempt=2", B + C + se("x", up=60000) + rd(2, 1500, "x", True), {}, "fail", "reset=1 with attempt=2"),
+        ("legacy ok: new process restarts attempt count", B + C + se("x") + rd(4, 1500, "x") + B + C + se("x") + rd(1, 1500, "x") + C, {}, "ok", "OK a4 reconnect"),
+        ("legacy fail: unparsable redial", B + C + se("x") + P + "redial attempt=one\n", {}, "fail", "unparsable redial"),
+        ("legacy ok: user stop, no redial", B + C + se("consent_withdrawn", "local") + B + C, {}, "ok", "OK a4 reconnect"),
+        # 4f28b86 / 4132e68 cap refusals
+        ("cap ok: peer_id_in_use -> redial at cap", B + C + se(PIU, up=40) + rd(9, 300000, PIU) + C, {}, "ok", "cap_redial=1"),
+        ("cap fail: peer_id_in_use short backoff", B + C + se(PIU, up=40) + rd(1, 2000, PIU) + C, {}, "fail", f"redial_in_ms=2000 after {PIU} < cap 300000"),
+        ("cap ok: endpoint_mismatch -> redial at cap", B + C + se(EM, up=12) + rd(9, 300000, EM), {}, "ok", "cap_refusal=1"),
+        ("cap fail: endpoint_mismatch short backoff", B + C + se(EM, up=12) + rd(2, 299999, EM), {}, "fail", f"redial_in_ms=299999 after {EM} < cap 300000"),
+        ("cap fail: redial after= does not name the refusal", B + C + se(PIU) + rd(9, 300000, "remote_closed"), {}, "fail", f"want after={PIU}"),
+        ("cap fail: refusal logged closed_by=local", B + C + se(EM, "local") + rd(9, 300000, EM), {}, "fail", "must be closed_by=remote"),
+        ("cap ok: SPIKE_REDIAL_CAP_MS override", B + C + se(PIU) + rd(3, 8000, PIU) + C, {"cap_ms": 8000}, "ok", "cap_ms=8000"),
+        ("cap ok: reset=1 on cap redial after long session (attempt = cap step)", B + C + se(PIU, up=61000) + rd(9, 300000, PIU, True), {}, "ok", "reset=1"),
+        ("cap ok: normal backoff resumes after the cap redial", B + C + se(PIU) + rd(9, 300000, PIU) + C + se("remote_closed") + rd(10, 150000, "remote_closed") + C, {}, "ok", "cap_redial=1"),
+        # Gateway log (ce80867 relay/io.rs lines)
+        ("gw fail: replaced across endpoints", B + C, {"gateway_log": GW + f"peer online peer_demo endpoint={E1}\n" + GW + f"peer online peer_demo endpoint={E2}\n"}, "fail", "`replaced` across endpoints for peer_demo"),
+        ("gw ok: same-endpoint replaced", B + C, {"gateway_log": GW + f"peer online peer_demo endpoint={E1}\n" + GW + f"peer online peer_demo endpoint={E1}\n"}, "ok", "replaced_same_endpoint=1 replaced_cross_endpoint=0"),
+        ("gw ok: offline then a new endpoint claims the free peer_id", B + C, {"gateway_log": GW + f"peer online p endpoint={E1}\n" + GW + "peer offline p\n" + GW + f"peer online p endpoint={E2}\n"}, "ok", "replaced_cross_endpoint=0"),
+        ("gw ok: refused peer_id_in_use, two peer_ids both online", B + C, {"gateway_log": GW + f"peer online peer_demo endpoint={E1}\n" + "\x1b[33m WARN\x1b[0m " + f"peer_id_in_use peer_demo endpoint={E2}\n" + GW + f"peer online peer_92a9d943afd7d7d4 endpoint={E2}\n"}, "ok", "online=2 replaced_same_endpoint=0 replaced_cross_endpoint=0 peer_id_in_use=1"),
+        ("gw ok: Gateway restart clears the table", B + C, {"gateway_log": GW + f"peer online p endpoint={E1}\n" + GW + "gateway HTTP on 0.0.0.0:8080\n" + GW + f"peer online p endpoint={E2}\n"}, "ok", "replaced_cross_endpoint=0"),
+        ("gw fail: cross-endpoint replace FAILs even on a pre-fa935fa Peer image", B + C + P + "session_end\n", {"gateway_log": GW + f"peer online p endpoint={E1}\n" + GW + f"peer online p endpoint={E2}\n"}, "fail", "across endpoints"),
+        ("gw skip: no Gateway log -> INFO", B + C, {}, "ok", "replaced-across-endpoints check skipped"),
+    ]
+    n_ok = 0
+    try:
+        for name, logs, kw, want, needle in cases:
+            st, msgs, _ = peer_reconnect_check({"a44": logs}, **kw)
+            text = "\n".join(msgs)
+            if st != want or needle not in text:
+                raise SystemExit(f"FAIL a4 reconnect selftest [{name}]: got {st}, want {want} with {needle!r}\n{text}")
+            n_ok += 1
+        # SPIKE_GATEWAY_LOG path input
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
+            f.write(GW + f"peer online p endpoint={E1}\n" + GW + f"peer online p endpoint={E2}\n")
+        os.environ["SPIKE_GATEWAY_LOG"] = f.name
+        st, msgs, _ = peer_reconnect_check({"a44": B + C})
+        os.unlink(f.name)
+        if st != "fail" or "across endpoints" not in "\n".join(msgs):
+            raise SystemExit(f"FAIL a4 reconnect selftest [SPIKE_GATEWAY_LOG file]: got {st}\n" + "\n".join(msgs))
+        n_ok += 1
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    print(f"A4_RECONNECT_SELFTEST_OK {n_ok}/{len(cases) + 1}", flush=True)
+
+
 def _a4_selftest():
-    """Offline self-test of the a4 grep helpers (no smokes): insecure grep + comment stripping."""
+    """Offline self-test of the a4 grep helpers (no smokes): insecure grep + comment stripping + reconnect contract."""
     _a4_insecure_selftest()
+    _a4_reconnect_selftest()
     print("A4_SELFTEST_OK", flush=True)
     return 0
 
