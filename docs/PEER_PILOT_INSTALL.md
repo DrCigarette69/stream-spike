@@ -2,10 +2,12 @@
 
 For the two pilot Linux devices. **amd64 only**: both pilot devices are x86_64.
 
-**Approved pilot image ID: `sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`.**
+**Approved pilot image ID: `sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e`.**
 The image is pinned by ID, never by tag: `peer-pilot:amd64` is only a convenience name and a
 rebuild can silently move it. Every load/verify/run below uses the ID. A new ID replaces this one
 only after `a45` passes on it (`SPIKE_PEER_IMAGE_ID=<new id>`) and the room agrees.
+Built from commit `4132e68` (replaced `sha256:2452f56d…`, which predates the derived peer_id and
+redial backoff).
 
 The image is built from `rust/crates/stream-peer/Dockerfile.pilot`. It contains no key and no
 settings: each device's identity key and daily byte counter live in a Docker volume mounted at
@@ -23,16 +25,17 @@ on 2375/2376), and don't add your user to the `docker` group; every command belo
 On a build box with the repo:
 
 ```
-sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:amd64 rust/
-sudo docker image inspect -f '{{.Id}}' sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a   # must succeed
-sudo docker save sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a | gzip > peer-pilot-amd64.tar.gz
+git checkout 4132e68
+sudo docker build -f rust/crates/stream-peer/Dockerfile.pilot -t peer-pilot:cand-4132e68 rust/
+sudo docker image inspect -f '{{.Id}}' sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e   # must succeed
+sudo docker save sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e | gzip > peer-pilot-amd64.tar.gz
 ```
 
-(Or run `SPIKE_PEER_IMAGE_ID=sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a python3 scripts/a45_peer_package_smoke.py`,
+(Or run `SPIKE_PEER_IMAGE_ID=sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e python3 scripts/a45_peer_package_smoke.py`,
 which FAILs if the build isn't that ID and prints `A45_IMAGE_ID=<id>`.)
 
 Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`
-and verify by ID: `sudo docker image inspect -f '{{.Id}}' sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a`
+and verify by ID: `sudo docker image inspect -f '{{.Id}}' sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e`
 must print that same ID. Don't verify via the tag.
 
 Note: Docker 29+ (containerd image store, the Ubuntu 26.04 default) shows the *manifest* digest
@@ -68,6 +71,12 @@ SPIKE_EGRESS_STATE_URL=https://control.170-9-253-4.sslip.io/v1/egress/state
 #SPIKE_PUBLIC_EGRESS=
 ```
 
+**Do not set `SPIKE_PEER_ID`.** The Peer derives it from its endpoint key
+(`peer_` + the first 16 hex of the endpoint ID; the log shows `peer_id=… source=endpoint`), and it
+refuses to start with `SPIKE_PEER_ID=peer_demo`. **Two devices must never share a key file**
+(`/data/peer_iroh_key`): the same key means the same endpoint ID and peer_id, and the Gateway
+refuses the second one (`peer_id_in_use`, the Peer then waits ~5 min before retrying).
+
 Already set inside the image (do not change): `SPIKE_TRANSPORT=iroh_pilot`,
 `SPIKE_IROH_KEY_PATH=/data/peer_iroh_key`, `SPIKE_EGRESS_BUDGET_PATH=/data/peer_egress_budget`,
 `SPIKE_PEER_ADMIN=127.0.0.1:9200`.
@@ -79,11 +88,11 @@ sudo docker volume create peer-data
 sudo docker run -d --name peer --restart unless-stopped \
   --env-file /etc/peer-pilot.env \
   -v peer-data:/data \
-  sha256:2452f56d86fe01d99cbfb3f284ef79fb99471017014c0dacbdb364a2dc41e21a
+  sha256:5fd94bdb796b779f3bb23a3aff244f72cdfc65d8fdc8808d682a1b099b6e065e
 ```
 
 (Docker 29+: use the manifest ID you confirmed in step 1.) Check what is running:
-`sudo docker inspect -f '{{.Image}}' peer` must print the approved ID.
+`sudo docker inspect -f '{{.Image}}' peer` must print the approved ID (Docker 29+: the manifest ID from step 1, whose config digest is the approved ID). The log must show `peer_id=peer_<16 hex> source=endpoint`.
 
 If a setting is missing the container exits right away; `sudo docker logs peer` names the
 problem (for example `a4_refuse_relay_config:<unset>` = no relay URL).
