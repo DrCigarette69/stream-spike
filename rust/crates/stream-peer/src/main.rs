@@ -159,6 +159,8 @@ async fn main() {
                 _ = tokio::signal::ctrl_c() => {}
                 _ = term.recv() => {}
             }
+            #[cfg(feature = "iroh_pilot")]
+            iroh_pilot_dial::shutdown_session().await;
             p.lock().unwrap().flush(true);
             eprintln!("peer egress_budget flushed on shutdown");
             std::process::exit(0);

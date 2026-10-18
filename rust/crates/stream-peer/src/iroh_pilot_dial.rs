@@ -226,6 +226,7 @@ pub async fn dial_loop(
         eprintln!("peer iroh_pilot path {}", counters_line(udp));
         slot.set(Box::new(IrohConn(conn.clone()))).await;
         let up_since = std::time::Instant::now();
+        live_set(conn.clone(), ep.clone(), up_since);
         let mut ct = ep.conn_type(gw_id);
         let get = move || ct.as_mut().map(|w| path_kind(&w.get())).unwrap_or(PathKind::None);
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -251,6 +252,10 @@ pub async fn dial_loop(
                 }
             }
         };
+        if live_take().is_none() {
+            // Shutdown already logged session_end for this session and is closing it.
+            return None;
+        }
         let (reason, by) = end_desc.unwrap_or(("unknown".to_string(), "local"));
         let up = up_since.elapsed();
         backoff.session_ended(up);
@@ -301,6 +306,40 @@ pub async fn dial_loop(
             }
         }
     }
+}
+
+/// The live Gateway session, for the SIGTERM/SIGINT shutdown hook (`shutdown_session`).
+struct Live {
+    conn: Connection,
+    ep: Endpoint,
+    since: std::time::Instant,
+}
+
+static LIVE: std::sync::Mutex<Option<Live>> = std::sync::Mutex::new(None);
+
+fn live_set(conn: Connection, ep: Endpoint, since: std::time::Instant) {
+    *LIVE.lock().unwrap() = Some(Live { conn, ep, since });
+}
+
+/// Exactly one of the session loop or the shutdown hook takes (and logs) a session.
+fn live_take() -> Option<Live> {
+    LIVE.lock().unwrap().take()
+}
+
+/// `session_end` line for a local shutdown.
+pub(crate) fn shutdown_line(up_ms: u64, counters: &str) -> String {
+    session_end_line("shutdown", "local", None, up_ms, counters)
+}
+
+/// SIGTERM/SIGINT: if a session is up, log its `session_end end_reason=shutdown closed_by=local`,
+/// close it with reason `shutdown` and give the close up to 1 s to go out. No-op otherwise.
+pub async fn shutdown_session() {
+    let Some(l) = live_take() else { return };
+    let up_ms = l.since.elapsed().as_millis() as u64;
+    let udp = udp_source(&l.ep);
+    eprintln!("peer iroh_pilot {}", shutdown_line(up_ms, &counters_line(udp.as_ref())));
+    l.conn.close(VarInt::from_u32(0), b"shutdown");
+    let _ = timeout(Duration::from_secs(1), l.ep.close()).await;
 }
 
 /// Gateway refusals that back off straight to the cap (P8 keys of the same name).

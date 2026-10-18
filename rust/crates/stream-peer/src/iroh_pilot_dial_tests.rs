@@ -133,3 +133,15 @@ fn cap_refusals_have_p8_copy_and_never_show_the_code() {
     }
     assert!(crate::a4_copy::p8_reason_line("peer_id_in_use").unwrap().contains("already running for this device"));
 }
+
+#[test]
+fn shutdown_line_is_local_with_uptime_and_counters() {
+    let udp = "udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0 recv_v6=0";
+    assert_eq!(shutdown_line(90123, udp), format!("session_end end_reason=shutdown closed_by=local up_ms=90123 {udp}"));
+}
+
+#[test]
+fn live_session_is_taken_once() {
+    // Nothing registered: the shutdown hook and the loop both see None (no line, no close).
+    assert!(live_take().is_none());
+}
