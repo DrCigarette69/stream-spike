@@ -223,8 +223,13 @@ non-root, key 0600 in `/data`, runs healthy with `--network none`, same endpoint
 restart. Metrics check: the image logs `udp_counters total=0 send_v4=0 send_v6=0 recv_v4=0
 recv_v6=0` after bind and never `udp_counters_unavailable`. Docker only via `-H unix:///var/run/docker.sock`; refuses if DOCKER_HOST is not unix://.
 Pilot ships amd64 only (both pilot devices are x86_64). Approved image, pinned by ID (never by
-the `peer-pilot:amd64` tag): `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d` (built from `94d9a6e`, tag `peer-pilot:cand-94d9a6e`; replaced `sha256:5fd94bdb…` from `4132e68`, before that `sha256:2452f56d…`). Install/run
-reference that ID; `a45` checks it with `SPIKE_PEER_IMAGE_ID` and prints `A45_IMAGE_ID=<id>`. A new
+the `peer-pilot:amd64` tag): config digest `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d` (Docker 26 / classic store
+image ID), manifest digest `sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8` (Docker 29 /
+containerd store image ID) (built from `94d9a6e`, tag `peer-pilot:cand-94d9a6e`; replaced `sha256:5fd94bdb…` from `4132e68`, before that `sha256:2452f56d…`). Install/run
+reference that ID; `a45` checks it with
+`SPIKE_PEER_IMAGE_ID=config=sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d,manifest=sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8`
+(comma-separated list; a bare single ID still works; a listed ID must match) and prints `A45_IMAGE_ID=<id>`
+(plus `A45_IMAGE_CONFIG_ID=<id>` on the containerd store). A new
 ID replaces it only after `a45` passes on it and the room agrees.
 Install steps for the pilot devices: `docs/PEER_PILOT_INSTALL.md`. Do not set `SPIKE_PEER_ID`
 (derived from the endpoint key); two devices must not share a key file.

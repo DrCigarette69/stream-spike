@@ -2,10 +2,23 @@
 
 For the two pilot Linux devices. **amd64 only**: both pilot devices are x86_64.
 
-**Approved pilot image ID: `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d`.**
+**Approved pilot image ID: `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d`** (config digest).
+
+The same image has two digests, depending on the Docker image store:
+
+| Docker | Image store | `docker image inspect -f '{{.Id}}'` shows |
+|---|---|---|
+| 26 (classic default) | classic (overlay2) | config digest `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d` |
+| 29+ (Ubuntu 26.04 default) | containerd | manifest digest `sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8` |
+
+Both name the same image: the manifest's `config` entry is the config digest. Pin both with
+`SPIKE_PEER_IMAGE_ID=config=sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d,manifest=sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8`
+(comma-separated; a bare single ID still works). A listed ID must match, or the check fails.
+
 The image is pinned by ID, never by tag: `peer-pilot:amd64` is only a convenience name and a
 rebuild can silently move it. Every load/verify/run below uses the ID. A new ID replaces this one
-only after `a45` passes on it (`SPIKE_PEER_IMAGE_ID=<new id>`) and the room agrees.
+only after `a45` passes on it (`SPIKE_PEER_IMAGE_ID=config=<new config id>,manifest=<new manifest id>`)
+and the room agrees.
 Built from commit `94d9a6e` (build tag `peer-pilot:cand-94d9a6e`; replaced `sha256:5fd94bdb…` from
 `4132e68`, which logged no `session_end` on a graceful stop, and before that `sha256:2452f56d…`,
 which predates the derived peer_id and redial backoff).
@@ -32,17 +45,18 @@ sudo docker image inspect -f '{{.Id}}' sha256:cccbe8a8896b959cc09aaa8383cf13bd5d
 sudo docker save sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d | gzip > peer-pilot-amd64.tar.gz
 ```
 
-(Or run `SPIKE_PEER_IMAGE_ID=sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d python3 scripts/a45_peer_package_smoke.py`,
-which FAILs if the build isn't that ID and prints `A45_IMAGE_ID=<id>`.)
+(Or run `SPIKE_PEER_IMAGE_ID=config=sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d,manifest=sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8 python3 scripts/a45_peer_package_smoke.py`,
+which FAILs unless the build matches one of the listed IDs and prints `A45_IMAGE_ID=<id>`. To check an
+image that is already loaded, without building, add `SPIKE_PEER_IMAGE=<ref or ID>`.)
 
 Copy `peer-pilot-amd64.tar.gz` to the device, then `sudo docker load < peer-pilot-amd64.tar.gz`
 and verify by ID: `sudo docker image inspect -f '{{.Id}}' sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d`
 must print that same ID. Don't verify via the tag.
 
 Note: Docker 29+ (containerd image store, the Ubuntu 26.04 default) shows the *manifest* digest
-as the image ID instead, so the ID differs. Check the config digest instead:
-`sudo ctr -n moby content get <shown ID> | grep -o '"config":{[^}]*'` must name the ID above.
-In that case run by the shown (manifest) ID once its config digest is confirmed; the tag is optional.
+as the image ID instead: it must be `sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8`. Confirm it points at the config digest:
+`sudo ctr -n moby content get sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8 | grep -o '"config":{[^}]*'` must name `sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d`.
+Then run by the manifest ID; the tag is optional.
 
 ## 2. Settings file
 
@@ -92,8 +106,8 @@ sudo docker run -d --name peer --restart unless-stopped \
   sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d
 ```
 
-(Docker 29+: use the manifest ID you confirmed in step 1.) Check what is running:
-`sudo docker inspect -f '{{.Image}}' peer` must print the approved ID (Docker 29+: the manifest ID from step 1, whose config digest is the approved ID). The log must show `peer_id=peer_<16 hex> source=endpoint`.
+(Docker 29+: use the manifest ID `sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8` instead.) Check what is running:
+`sudo docker inspect -f '{{.Image}}' peer` must print the approved ID (Docker 29+: the manifest ID `sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8`). The log must show `peer_id=peer_<16 hex> source=endpoint`.
 
 If a setting is missing the container exits right away; `sudo docker logs peer` names the
 problem (for example `a4_refuse_relay_config:<unset>` = no relay URL).
