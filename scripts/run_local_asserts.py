@@ -1518,7 +1518,7 @@ def _a4_reconnect_selftest():
 def _a4_image_id_selftest():
     """Synthetic cases for a45_image_id_check / SPIKE_PEER_IMAGE_ID lists (no docker)."""
     CFG = "sha256:cccbe8a8896b959cc09aaa8383cf13bd5db22d09c7d8111aef3170b043ec725d"
-    MAN = "sha256:7591e580" + "0" * 56  # placeholder manifest digest (real one not posted yet)
+    MAN = "sha256:d233bf8b003cfb4e291ec4806b867aa56867d45eb53e3bfa4fc357cc3e234bd8"  # cccbe8a8 manifest digest (vps-2, Docker 29)
     OLD = "sha256:5fd94bdb" + "1" * 56
     out_cfg = f"A45_IMAGE_ID={CFG}\nA4.5_PEER_PACKAGE_GREEN\n"                       # classic store
     out_man = f"A45_IMAGE_ID={MAN}\nA45_IMAGE_CONFIG_ID={CFG}\nA4.5_PEER_PACKAGE_GREEN\n"  # containerd store
